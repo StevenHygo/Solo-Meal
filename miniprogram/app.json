@@ -1,0 +1,46 @@
+{
+  "pages": [
+    "pages/discover/index",
+    "pages/results/index",
+    "pages/detail/index",
+    "pages/favorites/index",
+    "pages/mine/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "一人食",
+    "navigationBarBackgroundColor": "#f8f6f0",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f8f6f0",
+    "backgroundTextStyle": "light"
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于查找当前位置附近适合一个人用餐的餐厅"
+    }
+  },
+  "requiredPrivateInfos": [
+    "getLocation"
+  ],
+  "tabBar": {
+    "color": "#7b817a",
+    "selectedColor": "#176b5c",
+    "backgroundColor": "#fffdf8",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/discover/index",
+        "text": "发现"
+      },
+      {
+        "pagePath": "pages/favorites/index",
+        "text": "收藏"
+      },
+      {
+        "pagePath": "pages/mine/index",
+        "text": "我的"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

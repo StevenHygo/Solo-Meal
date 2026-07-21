@@ -1,0 +1,9 @@
+{
+  "desc": "一人食 v0 sitemap",
+  "rules": [
+    {
+      "action": "allow",
+      "page": "*"
+    }
+  ]
+}
