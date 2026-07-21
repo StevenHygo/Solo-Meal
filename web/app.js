@@ -34,7 +34,15 @@ const distanceOptions = [
   { value: '2000', label: '2 公里内' }
 ];
 
-const reportTypes = ['店已关闭或搬迁', '不接待单人', '营业时间错误', '价格区间错误', '单人座位信息错误', '分店匹配错误', '其他'];
+const reportTypes = [
+  { code: 'closed_or_moved', label: '店已关闭或搬迁' },
+  { code: 'rejects_solo', label: '不接待单人' },
+  { code: 'hours_incorrect', label: '营业时间错误' },
+  { code: 'price_incorrect', label: '价格区间错误' },
+  { code: 'seating_incorrect', label: '单人座位信息错误' },
+  { code: 'branch_mismatch', label: '分店匹配错误' },
+  { code: 'other', label: '其他' }
+];
 
 const state = {
   keyword: '',
@@ -75,6 +83,15 @@ function readStorage(key, fallback) {
 
 function writeStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function createIdempotencyKey() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const value = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 function loadPreferences() {
@@ -402,21 +419,93 @@ function openReport(id) {
   state.selectedReportType = '';
   el('reportNote').value = '';
   el('reportCounter').textContent = '0';
-  el('reportOptions').innerHTML = reportTypes.map(type => `<button class="report-option" data-report-type="${escapeHtml(type)}" type="button">${escapeHtml(type)}</button>`).join('');
+  el('reportDeliveryNote').textContent = restaurantRepository.mode() === 'api'
+    ? '纠错会发送到一人食复核队列，不会直接修改页面。'
+    : '当前为本机模式，纠错先保存在这台设备。';
+  el('reportOptions').innerHTML = reportTypes.map(type => `<button class="report-option" data-report-type="${escapeHtml(type.code)}" type="button">${escapeHtml(type.label)}</button>`).join('');
   openOverlay('reportOverlay');
 }
 
-function submitReport() {
+async function submitReport() {
   if (!state.selectedReportType) {
     showToast('请选择问题类型');
     return;
   }
+  const button = el('submitReport');
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = '正在提交…';
   const note = el('reportNote').value.slice(0, 200);
   const reports = readStorage(STORAGE.reports, []);
-  reports.push({ restaurantId: state.selectedRestaurantId, type: state.selectedReportType, note, createdAt: new Date().toISOString() });
-  writeStorage(STORAGE.reports, reports.slice(-30));
-  closeOverlay('reportOverlay');
-  showToast('已提交，等待复核');
+  const type = reportTypes.find(item => item.code === state.selectedReportType);
+  const report = {
+    restaurantId: state.selectedRestaurantId,
+    type: state.selectedReportType,
+    typeLabel: type?.label || '其他',
+    note,
+    idempotencyKey: createIdempotencyKey(),
+    createdAt: new Date().toISOString(),
+    syncStatus: 'local'
+  };
+  try {
+    const result = await restaurantRepository.submitFeedback({
+      restaurantId: report.restaurantId,
+      reportType: report.type,
+      note: report.note,
+      idempotencyKey: report.idempotencyKey
+    });
+    report.syncStatus = result.submitted ? 'submitted' : (restaurantRepository.mode() === 'api' ? 'pending' : 'local');
+    if (result.report) report.serverReportId = result.report.id;
+    reports.push(report);
+    writeStorage(STORAGE.reports, reports.slice(-30));
+    closeOverlay('reportOverlay');
+    renderReportSyncStatus();
+    if (result.submitted) showToast('已进入复核队列');
+    else if (restaurantRepository.mode() === 'api') showToast('服务暂不可用，已保存在本机');
+    else showToast('已保存在本机');
+  } finally {
+    button.disabled = false;
+    button.textContent = '提交复核';
+  }
+}
+
+function renderReportSyncStatus() {
+  const pending = readStorage(STORAGE.reports, []).filter(report => report.syncStatus === 'pending' && report.idempotencyKey);
+  const button = el('syncReportsButton');
+  button.classList.toggle('hidden', pending.length === 0);
+  el('syncReportsStatus').textContent = pending.length ? `${pending.length} 条保存在本机` : '没有待同步记录';
+}
+
+async function syncPendingReports() {
+  if (restaurantRepository.mode() !== 'api') {
+    showToast('当前未连接服务端');
+    return;
+  }
+  const reports = readStorage(STORAGE.reports, []);
+  const pending = reports.filter(report => report.syncStatus === 'pending' && report.idempotencyKey);
+  if (!pending.length) return renderReportSyncStatus();
+  const button = el('syncReportsButton');
+  button.disabled = true;
+  let synced = 0;
+  try {
+    for (const report of pending) {
+      const result = await restaurantRepository.submitFeedback({
+        restaurantId: report.restaurantId,
+        reportType: report.type,
+        note: report.note,
+        idempotencyKey: report.idempotencyKey
+      });
+      if (!result.submitted) continue;
+      report.syncStatus = 'submitted';
+      report.serverReportId = result.report?.id;
+      synced += 1;
+    }
+    writeStorage(STORAGE.reports, reports);
+    renderReportSyncStatus();
+    showToast(synced ? `已同步 ${synced} 条纠错` : '暂时无法同步');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function openOverlay(id) {
@@ -685,7 +774,7 @@ function bindEvents() {
   document.querySelector('.view-switch').addEventListener('click', event => { if (event.target.dataset.view) setView(event.target.dataset.view); });
 
   el('favoritesButton').addEventListener('click', () => { renderFavorites(); openOverlay('favoritesOverlay'); });
-  el('aboutButton').addEventListener('click', () => { renderPreferenceOptions(); openOverlay('settingsOverlay'); });
+  el('aboutButton').addEventListener('click', () => { renderPreferenceOptions(); renderReportSyncStatus(); openOverlay('settingsOverlay'); });
   el('locationButton').addEventListener('click', openLocationSelector);
   el('manualLocation').addEventListener('click', openLocationSelector);
   el('changeCoverageButton').addEventListener('click', openLocationSelector);
@@ -693,12 +782,14 @@ function bindEvents() {
   el('locationSearchForm').addEventListener('submit', event => event.preventDefault());
   el('locationSearch').addEventListener('input', event => renderLocationSuggestions(event.target.value));
   el('submitReport').addEventListener('click', submitReport);
+  el('syncReportsButton').addEventListener('click', syncPendingReports);
   el('reportNote').addEventListener('input', event => { el('reportCounter').textContent = event.target.value.length; });
   el('privacyButton').addEventListener('click', () => showToast('位置只在点击后用于当前搜索，不保存轨迹'));
   el('clearDataButton').addEventListener('click', () => {
     if (!window.confirm('确认清除收藏、预算和纠错记录？')) return;
     Object.values(STORAGE).forEach(key => localStorage.removeItem(key));
     renderPreferenceOptions();
+    renderReportSyncStatus();
     searchRestaurants();
     showToast('本机数据已清除');
   });
@@ -709,7 +800,7 @@ function bindEvents() {
     document.querySelectorAll('.mobile-nav-item').forEach(button => button.classList.toggle('active', button === item));
     if (item.dataset.nav === 'discover') window.scrollTo({ top: 0, behavior: 'smooth' });
     if (item.dataset.nav === 'favorites') { renderFavorites(); openOverlay('favoritesOverlay'); }
-    if (item.dataset.nav === 'settings') { renderPreferenceOptions(); openOverlay('settingsOverlay'); }
+    if (item.dataset.nav === 'settings') { renderPreferenceOptions(); renderReportSyncStatus(); openOverlay('settingsOverlay'); }
   });
 
   document.querySelectorAll('.overlay').forEach(overlay => overlay.addEventListener('click', event => {

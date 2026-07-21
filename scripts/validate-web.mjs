@@ -12,7 +12,7 @@ function assert(condition, message) {
   else errors.push(message);
 }
 
-for (const file of ['index.html', 'styles.css', 'app.js', 'config.js', 'data.js', 'services/api-client.js', 'services/restaurant-repository.js', '.nojekyll']) {
+for (const file of ['index.html', 'styles.css', 'app.js', 'config.js', 'data.js', 'services/api-client.js', 'services/restaurant-repository.js', 'ops/index.html', 'ops/styles.css', 'ops/app.js', '.nojekyll']) {
   assert(fs.existsSync(path.join(webRoot, file)), `web/${file} exists`);
 }
 
@@ -23,6 +23,9 @@ const config = fs.readFileSync(path.join(webRoot, 'config.js'), 'utf8');
 const data = fs.readFileSync(path.join(webRoot, 'data.js'), 'utf8');
 const apiClient = fs.readFileSync(path.join(webRoot, 'services', 'api-client.js'), 'utf8');
 const restaurantRepository = fs.readFileSync(path.join(webRoot, 'services', 'restaurant-repository.js'), 'utf8');
+const opsHtml = fs.readFileSync(path.join(webRoot, 'ops', 'index.html'), 'utf8');
+const opsCss = fs.readFileSync(path.join(webRoot, 'ops', 'styles.css'), 'utf8');
+const opsApp = fs.readFileSync(path.join(webRoot, 'ops', 'app.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 function stripModuleSyntax(source) {
@@ -52,6 +55,10 @@ assert(restaurantRepository.includes('successfulSearches.get(cacheKey)'), 'API c
 assert(app.includes("coordType: 'wgs84'"), 'browser geolocation is labeled as WGS84');
 assert(app.includes('restaurantRepository.getCachedRestaurant'), 'local workflows read through the repository cache');
 assert(app.includes('formatCacheTime(state.dataSource.cachedAt)'), 'cached results expose their successful query time');
+assert(apiClient.includes("'/api/v1/feedback-reports'"), 'API client exposes the feedback endpoint');
+assert(restaurantRepository.includes('async submitFeedback(input)'), 'repository owns feedback delivery and local fallback');
+assert(app.includes("syncStatus: 'local'"), 'feedback starts with an explicit local delivery state');
+assert(app.includes('syncPendingReports'), 'pending feedback requires an explicit retry action');
 
 try {
   new vm.Script(stripModuleSyntax(app), { filename: 'web/app.js' });
@@ -83,6 +90,29 @@ for (const [filename, source] of [['web/services/api-client.js', apiClient], ['w
   }
 }
 
+try {
+  new vm.Script(stripModuleSyntax(opsApp), { filename: 'web/ops/app.js' });
+  checks.push('web/ops/app.js parses');
+} catch (error) {
+  errors.push(`web/ops/app.js syntax error: ${error.message}`);
+}
+
+assert(opsHtml.includes('type="module" src="./app.js"'), 'operator HTML loads its module entry');
+assert(opsHtml.includes('name="robots" content="noindex,nofollow"'), 'operator page opts out of indexing');
+assert(opsHtml.includes('http-equiv="Content-Security-Policy"'), 'operator page defines a content security policy');
+const operatorUsesExternalAsset = /(?:src|href)=["']https?:\/\//.test(opsHtml)
+  || /url\(\s*["']?https?:\/\//.test(opsCss);
+assert(!operatorUsesExternalAsset, 'operator HTML and CSS do not depend on external assets');
+assert(!/localStorage|sessionStorage/.test(opsApp), 'operator credentials are not persisted in browser storage');
+assert(opsApp.includes("authorization: `Bearer ${state.token}`"), 'operator requests use bearer authorization');
+assert(opsApp.includes("parsedUrl.protocol !== 'https:'"), 'operator API rejects insecure non-local endpoints');
+
+const opsIds = [...opsHtml.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+assert(new Set(opsIds).size === opsIds.length, 'operator HTML IDs are unique');
+for (const id of new Set([...opsApp.matchAll(/el\('([^']+)'\)/g)].map(match => match[1]))) {
+  assert(opsIds.includes(id), `operator HTML provides #${id}`);
+}
+
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert(new Set(ids).size === ids.length, 'HTML IDs are unique');
 for (const id of new Set([...app.matchAll(/el\('([^']+)'\)/g)].map(match => match[1]))) {
@@ -92,6 +122,7 @@ for (const id of new Set([...app.matchAll(/el\('([^']+)'\)/g)].map(match => matc
 const openBraces = (css.match(/{/g) || []).length;
 const closeBraces = (css.match(/}/g) || []).length;
 assert(openBraces === closeBraces, 'CSS braces are balanced');
+assert((opsCss.match(/{/g) || []).length === (opsCss.match(/}/g) || []).length, 'operator CSS braces are balanced');
 
 const requiredFeatures = ['searchRestaurants', 'renderResults', 'renderMap', 'renderCoverageState', 'renderLocationSuggestions', 'selectLocation', 'openDetail', 'renderFavorites', 'submitReport', 'requestLocation'];
 for (const feature of requiredFeatures) assert(new RegExp(`(?:async\\s+)?function ${feature}\\(`).test(app), `${feature} is implemented`);

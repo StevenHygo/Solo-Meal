@@ -170,5 +170,19 @@ export const restaurantRepository = {
     }
     return { restaurant: cache.get(id) || null, source: 'static' };
   },
+  async submitFeedback(input) {
+    if (apiClient.options().mode !== 'api') return { submitted: false, source: 'local' };
+    try {
+      const response = await apiClient.submitFeedback({
+        restaurant_id: input.restaurantId,
+        report_type: input.reportType,
+        note: input.note,
+        idempotency_key: input.idempotencyKey
+      });
+      return { submitted: true, source: 'api', report: response.report, idempotentReplay: response.idempotent_replay === true };
+    } catch (error) {
+      return { submitted: false, source: 'local', error: error.message };
+    }
+  },
   getCachedRestaurant: id => cache.get(id) || null
 };

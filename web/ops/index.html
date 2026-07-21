@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex,nofollow">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https: http://127.0.0.1:* http://localhost:*; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'">
+    <title>一人食 · 运营台</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="../" aria-label="返回一人食首页"><span>SOLO MEAL</span><strong>一人食运营台</strong></a>
+      <div class="connection-state" id="connectionState" data-state="idle"><i aria-hidden="true"></i><span>未连接</span></div>
+    </header>
+
+    <section class="connection-band" aria-labelledby="connectionTitle">
+      <div class="connection-inner">
+        <div><p>OPERATIONS ACCESS</p><h1 id="connectionTitle">复核工作台</h1></div>
+        <form class="connection-form" id="connectionForm">
+          <label><span>API 地址</span><input id="apiBaseInput" type="url" autocomplete="url" required></label>
+          <label><span>操作人</span><input id="operatorInput" type="text" maxlength="80" pattern="[A-Za-z0-9._@-]+" value="operator" autocomplete="username" required></label>
+          <label><span>运营 Token</span><input id="tokenInput" type="password" minlength="32" autocomplete="off" required></label>
+          <button class="primary-button" type="submit">连接</button>
+        </form>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <aside class="queue-panel" aria-labelledby="queueTitle">
+        <div class="panel-heading"><div><p>CURATION QUEUE</p><h2 id="queueTitle">复核队列 <span id="taskCount">0</span></h2></div><div class="panel-tools"><button class="secondary-button compact-button" id="sweepButton" type="button">扫描过期</button><button class="icon-button" id="refreshButton" type="button" title="刷新队列" aria-label="刷新队列">↻</button></div></div>
+        <div class="status-tabs" id="statusTabs" role="tablist" aria-label="任务状态">
+          <button class="active" data-status="open" role="tab" aria-selected="true" type="button">待处理</button>
+          <button data-status="in_progress" role="tab" aria-selected="false" type="button">处理中</button>
+          <button data-status="completed" role="tab" aria-selected="false" type="button">已完成</button>
+          <button data-status="cancelled" role="tab" aria-selected="false" type="button">已驳回</button>
+        </div>
+        <div class="task-list" id="taskList"><div class="queue-empty">连接后读取复核任务</div></div>
+      </aside>
+
+      <section class="detail-panel" aria-labelledby="detailTitle">
+        <div class="detail-empty" id="detailEmpty"><span aria-hidden="true">✓</span><strong>选择一条复核任务</strong></div>
+        <div class="detail-content hidden" id="detailContent">
+          <div class="detail-heading"><div><p id="detailKicker">FEEDBACK REVIEW</p><h2 id="detailTitle">任务详情</h2></div><span class="priority-badge" id="priorityBadge">P0</span></div>
+          <dl class="task-facts">
+            <div><dt>餐厅</dt><dd id="restaurantValue">-</dd></div>
+            <div><dt>城市</dt><dd id="cityValue">-</dd></div>
+            <div><dt>状态</dt><dd id="statusValue">-</dd></div>
+            <div><dt>截止</dt><dd id="dueValue">-</dd></div>
+          </dl>
+          <section class="report-block"><h3>纠错内容</h3><strong id="reportTypeValue">-</strong><p id="reportNoteValue">-</p></section>
+          <form class="review-form" id="reviewForm">
+            <label><span>负责人</span><input id="assigneeInput" type="text" maxlength="80"></label>
+            <label><span>处理说明</span><textarea id="resolutionInput" maxlength="500" rows="5"></textarea><small><span id="resolutionCount">0</span> / 500</small></label>
+            <div class="review-actions" id="reviewActions"></div>
+          </form>
+          <div class="resolved-block hidden" id="resolvedBlock"><span>处理记录</span><strong id="resolvedValue">-</strong></div>
+        </div>
+      </section>
+    </main>
+    <div class="toast hidden" id="opsToast" role="status"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

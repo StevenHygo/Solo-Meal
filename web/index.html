@@ -165,7 +165,7 @@
     <div class="overlay hidden" id="reportOverlay" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
       <section class="sheet report-sheet">
         <div class="sheet-header"><div><p class="eyebrow">DATA CHECK</p><h2 id="reportTitle">哪里不准确？</h2></div><button class="close-button" data-close="reportOverlay" type="button" aria-label="关闭">×</button></div>
-        <p class="sheet-description">纠错不会直接修改页面，复核后才会发布。</p>
+        <p class="sheet-description" id="reportDeliveryNote">纠错不会直接修改页面，复核后才会发布。</p>
         <div class="report-options" id="reportOptions"></div>
         <textarea id="reportNote" maxlength="200" placeholder="可选补充，最多 200 字"></textarea>
         <div class="textarea-counter"><span id="reportCounter">0</span> / 200</div>
@@ -178,7 +178,7 @@
         <div class="sheet-header"><div><p class="eyebrow">LOCAL PROFILE</p><h2 id="settingsTitle">我的一人食</h2></div><button class="close-button" data-close="settingsOverlay" type="button" aria-label="关闭">×</button></div>
         <div class="settings-status"><span class="status-orb">1</span><div><strong>本机模式</strong><small>v1 Beta 私有收藏 · 无需登录</small></div></div>
         <div class="settings-group"><h3>默认预算</h3><div class="option-grid" id="preferenceOptions"></div></div>
-        <div class="settings-group"><h3>数据与隐私</h3><div class="settings-menu"><button type="button" id="privacyButton"><span><strong>位置与隐私</strong><small>一次定位，不保存轨迹</small></span><b>›</b></button><button type="button" id="clearDataButton"><span><strong class="danger-text">清除本机数据</strong><small>收藏、预算与纠错记录</small></span><b>›</b></button></div></div>
+        <div class="settings-group"><h3>数据与隐私</h3><div class="settings-menu"><button class="hidden" type="button" id="syncReportsButton"><span><strong>同步待复核纠错</strong><small id="syncReportsStatus">没有待同步记录</small></span><b aria-hidden="true">↻</b></button><button type="button" id="privacyButton"><span><strong>位置与隐私</strong><small>一次定位，不保存轨迹</small></span><b>›</b></button><button type="button" id="clearDataButton"><span><strong class="danger-text">清除本机数据</strong><small>收藏、预算与纠错记录</small></span><b>›</b></button></div></div>
         <div class="settings-note"><strong>一个人吃，也值得被认真对待。</strong><span>v1 Beta 仍只展示确定、可核验的信息。</span></div>
       </section>
     </div>

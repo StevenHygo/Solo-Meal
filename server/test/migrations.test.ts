@@ -22,3 +22,14 @@ test('initial migration has an explicit rollback pair', async () => {
   assert.match(rollback, /DROP TABLE IF EXISTS restaurants/);
   assert.match(rollback, /DROP TYPE IF EXISTS coverage_state/);
 });
+
+test('feedback operations migration is additive and reversible', async () => {
+  const migration = await readFile(path.resolve('migrations', '002_feedback_operations.up.sql'), 'utf8');
+  const rollback = await readFile(path.resolve('migrations', '002_feedback_operations.down.sql'), 'utf8');
+  assert.match(migration, /ALTER TABLE feedback_reports/);
+  assert.match(migration, /ADD COLUMN resolution_note/);
+  assert.match(migration, /ALTER TABLE curation_tasks/);
+  assert.match(migration, /audit_logs_entity_idx/);
+  assert.match(rollback, /DROP INDEX IF EXISTS audit_logs_entity_idx/);
+  assert.match(rollback, /DROP COLUMN IF EXISTS resolution_note/);
+});

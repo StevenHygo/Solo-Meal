@@ -1,4 +1,5 @@
 import type { City, Coordinate, CoverageArea, EvidenceFixture, HoursInterval, LocationSuggestion } from './types.js';
+import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, EvidenceSweepResult, FeedbackReceipt, FeedbackSubmission } from './operations.js';
 
 export interface RestaurantHours extends HoursInterval {
   dayOfWeek: number | null;
@@ -69,5 +70,9 @@ export interface RestaurantRepository {
   suggestLocations(query: string, limit: number): Promise<LocationSuggestion[]>;
   findCandidates(query: CandidateQuery): Promise<RestaurantRecord[]>;
   findRestaurant(id: string): Promise<RestaurantRecord | null>;
+  createFeedbackReport(input: FeedbackSubmission): Promise<FeedbackReceipt>;
+  listCurationTasks(status: CurationTaskStatus | null, limit: number): Promise<CurationTaskRecord[]>;
+  updateCurationTask(id: string, update: CurationTaskUpdate): Promise<CurationTaskRecord>;
+  sweepExpiredEvidence(at: Date, actorId: string): Promise<EvidenceSweepResult>;
   close(): Promise<void>;
 }

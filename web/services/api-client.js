@@ -34,5 +34,6 @@ async function request(path, init = {}) {
 export const apiClient = {
   options: runtimeOptions,
   searchRestaurants: payload => request('/api/v1/restaurants/search', { method: 'POST', body: JSON.stringify(payload) }),
-  getRestaurant: id => request(`/api/v1/restaurants/${encodeURIComponent(id)}`)
+  getRestaurant: id => request(`/api/v1/restaurants/${encodeURIComponent(id)}`),
+  submitFeedback: payload => request('/api/v1/feedback-reports', { method: 'POST', body: JSON.stringify(payload) })
 };
