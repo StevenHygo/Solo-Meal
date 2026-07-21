@@ -1,0 +1,11 @@
+{
+  "name": "solo-meal-v0",
+  "version": "0.1.0",
+  "private": true,
+  "description": "一人食静态网页 v0",
+  "scripts": {
+    "validate": "node scripts/validate-web.mjs",
+    "validate:web": "node scripts/validate-web.mjs",
+    "validate:miniprogram": "node scripts/validate.mjs"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "description": "一人食 v0",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "miniprogram/",
+  "projectname": "solo-meal-v0",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": false,
+    "urlCheck": false,
+    "compileHotReLoad": true
+  },
+  "appid": "touristappid",
+  "libVersion": "3.8.8",
+  "condition": {}
+}
