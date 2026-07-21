@@ -1,0 +1,97 @@
+<view class="page discover-page">
+  <view class="topbar">
+    <view>
+      <view class="eyebrow">SOLO MEAL / V0</view>
+      <view class="brand">一人食</view>
+    </view>
+    <button class="location-button" bindtap="useCurrentLocation">
+      <text class="location-mark">⌖</text>
+      <text>{{locationReady ? '当前位置' : '使用当前位置'}}</text>
+    </button>
+  </view>
+
+  <view class="hero-copy">
+    <view class="hero-title">今天，想在哪里<br/><text>好好吃一顿？</text></view>
+    <view class="hero-subtitle">从一个人也舒服的座位开始选。</view>
+  </view>
+
+  <view class="search-box card">
+    <text class="search-icon">⌕</text>
+    <input
+      value="{{searchText}}"
+      placeholder="搜索商圈、地铁站或餐厅"
+      placeholder-class="search-placeholder"
+      confirm-type="search"
+      bindinput="onSearchInput"
+      bindconfirm="submitSearch"
+      bindfocus="onSearchFocus"
+    />
+    <button class="search-submit" bindtap="submitSearch">找店</button>
+  </view>
+
+  <view class="location-line" bindtap="openLocationSearch">
+    <text class="location-dot">●</text>
+    <text>{{locationLabel}}</text>
+    <text class="location-arrow">›</text>
+  </view>
+
+  <view class="scene-section">
+    <view class="section-row">
+      <text class="section-title">按现在的状态找</text>
+      <text class="muted section-caption">少一点纠结</text>
+    </view>
+    <view class="scene-grid">
+      <button
+        wx:for="{{scenes}}"
+        wx:key="key"
+        class="scene-card {{currentScene === item.key ? 'active' : ''}}"
+        data-scene="{{item.key}}"
+        bindtap="onSceneTap"
+      >
+        <text class="scene-icon">{{item.icon}}</text>
+        <text class="scene-label">{{item.label}}</text>
+      </button>
+    </view>
+  </view>
+
+  <view class="featured-section">
+    <view class="section-row">
+      <view>
+        <text class="section-title">附近的稳妥选择</text>
+        <view class="section-helper">有依据，比“看起来不错”更重要</view>
+      </view>
+      <button class="ghost-button" bindtap="openFavorites">我的收藏 ›</button>
+    </view>
+
+    <view class="featured-list">
+      <view
+        wx:for="{{featured}}"
+        wx:key="id"
+        class="featured-card card"
+        data-id="{{item.id}}"
+        bindtap="openFeatured"
+      >
+        <view class="featured-topline">
+          <view class="score-bubble">{{item.soloScore}}</view>
+          <view class="featured-main">
+            <view class="featured-name">{{item.name}}</view>
+            <view class="featured-meta">{{item.cuisine}} · {{item.distance}}m · ¥{{item.priceMin}}-{{item.priceMax}}</view>
+          </view>
+          <text class="chevron">›</text>
+        </view>
+        <view class="reason-row">
+          <text wx:for="{{item.reasons}}" wx:key="*this" class="tag">{{item}}</text>
+        </view>
+        <view class="verified-line"><text>✓ {{item.verifiedAt}}核验</text><text>{{item.confidenceLabel}}</text></view>
+      </view>
+    </view>
+  </view>
+
+  <view class="data-note">
+    <view class="data-note-mark">i</view>
+    <view>
+      <view class="data-note-title">试点数据 · 静安寺 / 南京西路</view>
+      <view class="data-note-text">v0 先把一个商圈的信息做准，暂无社交内容和实时排队数据。</view>
+    </view>
+  </view>
+</view>

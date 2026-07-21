@@ -1,0 +1,275 @@
+.discover-page {
+  padding-top: 38rpx;
+}
+
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.brand {
+  margin-top: 8rpx;
+  color: #173b33;
+  font-size: 54rpx;
+  font-weight: 800;
+  letter-spacing: 2rpx;
+}
+
+.location-button {
+  display: flex;
+  align-items: center;
+  min-height: 60rpx;
+  margin-top: 8rpx;
+  padding: 0 18rpx;
+  border: 1rpx solid #e1e2da;
+  border-radius: 30rpx;
+  background: #fffdf8;
+  color: #176b5c;
+  font-size: 23rpx;
+}
+
+.location-mark {
+  margin-right: 8rpx;
+  font-size: 30rpx;
+}
+
+.hero-copy {
+  margin-top: 74rpx;
+}
+
+.hero-title {
+  color: #182a25;
+  font-size: 58rpx;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -1rpx;
+}
+
+.hero-title text {
+  color: #176b5c;
+}
+
+.hero-subtitle {
+  margin-top: 18rpx;
+  color: #7c837c;
+  font-size: 27rpx;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  height: 98rpx;
+  margin-top: 40rpx;
+  padding: 0 18rpx 0 26rpx;
+}
+
+.search-icon {
+  margin-right: 18rpx;
+  color: #176b5c;
+  font-size: 42rpx;
+  line-height: 1;
+}
+
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  color: #1c2825;
+  font-size: 27rpx;
+}
+
+.search-placeholder {
+  color: #a5aaa2;
+}
+
+.search-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 108rpx;
+  height: 64rpx;
+  border-radius: 6px;
+  background: #176b5c;
+  color: #fffdf8;
+  font-size: 25rpx;
+  font-weight: 700;
+}
+
+.location-line {
+  display: flex;
+  align-items: center;
+  margin: 24rpx 4rpx 0;
+  color: #176b5c;
+  font-size: 24rpx;
+}
+
+.location-dot {
+  margin-right: 12rpx;
+  color: #cf6747;
+  font-size: 18rpx;
+}
+
+.location-arrow {
+  margin-left: auto;
+  font-size: 36rpx;
+  font-weight: 300;
+}
+
+.scene-section {
+  margin-top: 68rpx;
+}
+
+.section-caption {
+  font-size: 23rpx;
+}
+
+.scene-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14rpx;
+  margin-top: 22rpx;
+}
+
+.scene-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  height: 148rpx;
+  padding: 22rpx 18rpx;
+  border: 1rpx solid #ece9df;
+  border-radius: 6px;
+  background: #fffdf8;
+  text-align: left;
+}
+
+.scene-card.active {
+  border-color: #176b5c;
+  background: #eaf3ee;
+}
+
+.scene-icon {
+  color: #cf6747;
+  font-size: 36rpx;
+  line-height: 1;
+}
+
+.scene-label {
+  color: #31443e;
+  font-size: 24rpx;
+  font-weight: 700;
+}
+
+.featured-section {
+  margin-top: 72rpx;
+}
+
+.section-helper {
+  margin-top: 8rpx;
+  color: #8b918a;
+  font-size: 22rpx;
+}
+
+.featured-list {
+  margin-top: 22rpx;
+}
+
+.featured-card {
+  margin-bottom: 18rpx;
+  padding: 24rpx;
+}
+
+.featured-topline {
+  display: flex;
+  align-items: center;
+}
+
+.score-bubble {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76rpx;
+  height: 76rpx;
+  border-radius: 50%;
+  background: #eaf3ee;
+  color: #176b5c;
+  font-size: 29rpx;
+  font-weight: 800;
+}
+
+.featured-main {
+  flex: 1;
+  min-width: 0;
+  margin-left: 18rpx;
+}
+
+.featured-name {
+  overflow: hidden;
+  color: #1c2825;
+  font-size: 30rpx;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.featured-meta {
+  margin-top: 8rpx;
+  color: #7b817a;
+  font-size: 22rpx;
+}
+
+.chevron {
+  color: #a4aaa3;
+  font-size: 42rpx;
+  font-weight: 300;
+}
+
+.reason-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 22rpx;
+}
+
+.verified-line {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4rpx;
+  color: #84918a;
+  font-size: 22rpx;
+}
+
+.data-note {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 52rpx;
+  padding: 22rpx;
+  border-left: 4rpx solid #cf6747;
+  background: #fff1e8;
+}
+
+.data-note-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32rpx;
+  height: 32rpx;
+  border: 2rpx solid #cf6747;
+  border-radius: 50%;
+  color: #cf6747;
+  font-size: 20rpx;
+  font-weight: 700;
+}
+
+.data-note-title {
+  margin-left: 14rpx;
+  color: #934c38;
+  font-size: 23rpx;
+  font-weight: 700;
+}
+
+.data-note-text {
+  margin: 8rpx 0 0 14rpx;
+  color: #9b7162;
+  font-size: 21rpx;
+  line-height: 1.5;
+}
