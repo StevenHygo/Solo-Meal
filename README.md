@@ -76,12 +76,16 @@ web/
 docs/
   competitive-research.md
   miniprogram-design.md
+  web-v1-update-design.md  # Web v1 图标、多城市与数据库升级设计
 miniprogram/               # 暂停维护的原生小程序原型
 scripts/
   validate-web.mjs
 ```
 
+## 下一版本
+
+- [Web v1 更新设计](./docs/web-v1-update-design.md)：食物类别图标、多城市覆盖、数据库/API、数据运营和迁移计划。
+
 ## 当前边界
 
 网页版 v0 是可部署的产品验证版本，不是生产数据平台。正式扩大使用前仍需接入真实 POI 后端、运营核验后台、服务端限流和审计，并完成网站主体、隐私政策和地图服务条款评审。
-
