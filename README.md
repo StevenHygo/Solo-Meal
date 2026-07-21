@@ -1,12 +1,14 @@
-# 一人食 v0 网页版
+# 一人食 Web v1 Beta
 
-一个不依赖 LLM、社交平台或后端服务的静态网页 v0，用于验证“一个人也舒服的餐厅”搜索与决策体验。页面可以直接部署到 GitHub Pages。
+一个帮助独自用餐者找到合适餐厅的 Web Beta。v1 在保留 v0 找店体验的基础上，加入配置驱动的食物品类、区域级覆盖状态和多城市扩展框架。当前仍可作为静态站点部署到 GitHub Pages。
 
 ## 网页功能
 
 - 位置授权失败后的静安寺试点数据降级；
 - 现在吃、快速解决、安静坐坐、预算友好场景；
 - 关键词、预算、品类、营业状态、用餐时间和距离筛选；
+- 16 类食物图标和稳定品类 code；
+- 上海试点区域搜索，以及北京、深圳等城市的明确开放状态；
 - 餐厅列表与响应式示意地图；
 - 单人适合度、可信度、来源和核验时间；
 - 餐厅详情、复制地址及高德地图导航；
@@ -32,7 +34,7 @@ python3 -m http.server 4173 -d web
 node scripts/validate-web.mjs
 ```
 
-校验覆盖静态资源、JavaScript 语法、HTML ID 契约、CSS 结构、功能入口、演示数据，以及网页运行时不包含社交、LLM 或微信依赖。
+校验覆盖静态资源、JavaScript 语法、HTML ID 契约、CSS 结构、功能入口、演示数据、16 类图标安全与配置一致性，以及网页运行时不包含社交、LLM 或微信依赖。
 
 ## 部署到 GitHub Pages
 
@@ -44,7 +46,7 @@ node scripts/validate-web.mjs
 ```bash
 git init
 git add .
-git commit -m "feat: add solo meal web v0"
+git commit -m "feat: add solo meal web"
 git branch -M main
 git remote add origin https://github.com/<YOUR_USER>/solo-meal.git
 git push -u origin main
@@ -59,7 +61,7 @@ git push -u origin main
 
 - 演示餐厅位于 [`web/data.js`](./web/data.js)，不会请求第三方评价内容。
 - 收藏、预算和纠错保存在浏览器 `localStorage` 中，不会上传。
-- 浏览器定位只在用户主动点击后申请；v0 不保存精确坐标或轨迹。
+- 浏览器定位只在用户主动点击后申请；v1 Beta 不保存精确坐标或轨迹。
 - “地图导航”会在新窗口打开高德 URI 页面；这是唯一由用户主动触发的外部跳转。
 
 ## 项目结构
@@ -69,7 +71,9 @@ web/
   index.html              # 网页结构和无障碍语义
   styles.css              # 响应式视觉系统
   app.js                  # 搜索、筛选、收藏、纠错和状态管理
-  data.js                 # 静安寺/南京西路演示数据
+  config.js               # v1 品类、城市和覆盖区域配置
+  data.js                 # 带 v1 code 的 v0 兼容 fixture
+  assets/cuisine/         # 16 个 SVG 品类图标
   .nojekyll               # GitHub Pages 静态发布
 .github/workflows/
   pages.yml               # GitHub Pages 自动部署
@@ -82,10 +86,17 @@ scripts/
   validate-web.mjs
 ```
 
-## 下一版本
+## 版本管理
+
+- 当前开发版本：`1.0.0-beta.1`，遵循 Semantic Versioning；
+- v1 工作在 `codex/web-v1` 功能分支，验证后再合并到 `main`；
+- 发布内容记录在 [`CHANGELOG.md`](./CHANGELOG.md)；
+- v0 餐厅 ID 和 `localStorage` key 保持不变，已有本机收藏和偏好兼容。
+
+## v1 路线
 
 - [Web v1 更新设计](./docs/web-v1-update-design.md)：食物类别图标、多城市覆盖、数据库/API、数据运营和迁移计划。
 
 ## 当前边界
 
-网页版 v0 是可部署的产品验证版本，不是生产数据平台。正式扩大使用前仍需接入真实 POI 后端、运营核验后台、服务端限流和审计，并完成网站主体、隐私政策和地图服务条款评审。
+当前 `1.0.0-beta.1` 完成 v1 阶段 A，主数据仍是静态 fixture，不是生产数据平台。正式扩大使用前仍需完成阶段 B/C 的 PostgreSQL/PostGIS、真实 POI 接入、运营核验后台、服务端限流和审计，并完成网站主体、隐私政策和地图服务条款评审。

@@ -1,4 +1,4 @@
-name: Deploy web v0 to GitHub Pages
+name: Deploy Solo Meal web to GitHub Pages
 
 on:
   push:

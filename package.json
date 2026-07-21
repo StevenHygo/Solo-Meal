@@ -1,8 +1,8 @@
 {
-  "name": "solo-meal-v0",
-  "version": "0.1.0",
+  "name": "solo-meal",
+  "version": "1.0.0-beta.1",
   "private": true,
-  "description": "一人食静态网页 v0",
+  "description": "一人食 Web v1 多城市 Beta",
   "scripts": {
     "validate": "node scripts/validate-web.mjs",
     "validate:web": "node scripts/validate-web.mjs",

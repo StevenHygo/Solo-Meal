@@ -1,4 +1,14 @@
 import { restaurants } from './data.js';
+import {
+  WEB_VERSION,
+  cities,
+  coverageStatus,
+  cuisineCategories,
+  getCity,
+  getCoverageArea,
+  getCuisine,
+  locationSuggestions
+} from './config.js';
 
 const STORAGE = {
   favorites: 'solo-meal-web-favorites',
@@ -14,13 +24,8 @@ const budgetOptions = [
 ];
 
 const cuisineOptions = [
-  { value: 'all', label: '全部品类' },
-  { value: 'noodles', label: '面食' },
-  { value: 'japanese', label: '日式简餐' },
-  { value: 'local', label: '本帮菜' },
-  { value: 'fast_food', label: '快餐小吃' },
-  { value: 'bbq', label: '烧肉' },
-  { value: 'rice', label: '粥饭' }
+  { value: 'all', label: '全部品类', icon: getCuisine('other').icon },
+  ...cuisineCategories.map(category => ({ value: category.code, label: category.label, icon: category.icon }))
 ];
 
 const distanceOptions = [
@@ -46,7 +51,9 @@ const state = {
   results: [],
   selectedRestaurantId: null,
   selectedReportType: '',
-  locationLabel: '静安寺附近'
+  locationLabel: '静安寺附近',
+  cityCode: 'shanghai',
+  coverageAreaCode: 'sh-jingan-huangpu'
 };
 
 const el = id => document.getElementById(id);
@@ -94,13 +101,62 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function cuisineIconMarkup(code, extraClass = '') {
+  const category = getCuisine(code);
+  return `<span class="cuisine-icon ${extraClass}" style="--cuisine-icon:url('${category.icon}')" aria-hidden="true"></span>`;
+}
+
+function getCurrentCoverage() {
+  const city = getCity(state.cityCode);
+  const area = getCoverageArea(state.cityCode, state.coverageAreaCode);
+  const status = area?.status || city?.status || 'unsupported';
+  return { city, area, status, searchable: status === 'live' || status === 'beta' };
+}
+
+function renderCoverageState() {
+  const { city, area, status } = getCurrentCoverage();
+  const statusCopy = coverageStatus[status] || coverageStatus.unsupported;
+  const areaName = area?.name || city?.name || '当前区域';
+  const cityName = city?.name || '当前城市';
+  const coverageText = status === 'live' ? `${areaName}已覆盖` : `${areaName} · ${statusCopy.description}`;
+
+  el('coverageKicker').textContent = `${cityName} · ${statusCopy.label}`;
+  el('coverageText').textContent = coverageText;
+  el('resultsAreaTitle').textContent = `${areaName}的稳妥选择`;
+  el('heroSignal').dataset.status = status;
+  el('coverageStatus').textContent = statusCopy.label;
+  el('coverageStatus').dataset.status = status;
+  el('coverageMessage').textContent = status === 'beta'
+    ? '当前为 Beta 覆盖，数据仍在持续补充；推荐来自已核验样本。'
+    : statusCopy.description;
+  el('coverageBanner').classList.toggle('hidden', status === 'live');
+}
+
+function renderEmptyState() {
+  const { status } = getCurrentCoverage();
+  const copy = {
+    live: ['还没有合适的结果', '可以清除搜索和筛选条件，仍然保留“一个人可吃”这个核心条件。', '查看全部餐厅'],
+    beta: ['还没有合适的结果', '可以清除搜索和筛选条件，仍然保留“一个人可吃”这个核心条件。', '查看全部餐厅'],
+    upcoming: ['这个区域正在补充', '餐厅仍在核验，达到开放门槛后才会显示单人友好推荐。', '更换位置'],
+    paused: ['这个区域暂停更新', '暂不返回新增推荐；已经收藏的餐厅详情仍可在本机查看。', '更换位置'],
+    unsupported: ['这里暂未覆盖', '当前没有经过核验的单人友好数据，可以切换到已开放区域。', '更换位置']
+  }[status] || ['这里暂未覆盖', '请切换到已开放区域。', '更换位置'];
+
+  el('emptyTitle').textContent = copy[0];
+  el('emptyDescription').textContent = copy[1];
+  el('relaxButton').textContent = copy[2];
+}
+
 function searchRestaurants() {
   const keyword = state.keyword.trim().toLowerCase();
   const { budget, cuisine, onlySolo, openNow, fastMeal, maxDistance } = state.filters;
   const quietMode = state.scene === 'quiet';
 
+  const coverage = getCurrentCoverage();
   state.results = restaurants
     .filter(item => {
+      if (!coverage.searchable) return false;
+      if (item.cityCode !== state.cityCode || item.coverageAreaCode !== state.coverageAreaCode) return false;
       const searchable = [item.name, item.cuisine, item.district, item.address].join(' ').toLowerCase();
       if (keyword && !searchable.includes(keyword)) return false;
       if (budget && item.priceMin > Number(budget)) return false;
@@ -121,6 +177,7 @@ function searchRestaurants() {
 
   renderResults();
   renderMap();
+  renderCoverageState();
   updateFilterSummary();
 }
 
@@ -129,6 +186,7 @@ function renderResults() {
   const empty = el('emptyState');
   const layout = document.querySelector('.results-layout');
   el('resultCount').textContent = state.results.length;
+  renderEmptyState();
 
   if (!state.results.length) {
     list.innerHTML = '';
@@ -139,13 +197,15 @@ function renderResults() {
 
   empty.classList.add('hidden');
   layout.classList.remove('hidden');
-  list.innerHTML = state.results.map(item => `
+  list.innerHTML = state.results.map(item => {
+    const cuisine = getCuisine(item.cuisineCode);
+    return `
     <article class="result-card" data-open-detail="${item.id}" tabindex="0" role="button" aria-label="查看 ${escapeHtml(item.name)}">
       <div class="result-main">
         <div class="score-badge ${item.confidence}"><strong>${item.soloScore}</strong><small>适合度</small></div>
         <div class="result-info">
           <div class="result-title-row"><span class="result-title">${escapeHtml(item.name)}</span><span class="status-badge ${item.openNow ? '' : 'closed'}">${item.openNow ? '营业中' : '暂未营业'}</span></div>
-          <div class="result-meta">${escapeHtml(item.cuisine)} · ${item.distance}m · ¥${item.priceMin}-${item.priceMax}</div>
+          <div class="result-meta"><span class="cuisine-meta">${cuisineIconMarkup(item.cuisineCode)}${escapeHtml(cuisine.label)}</span><span aria-hidden="true">·</span><span>${item.distance}m</span><span aria-hidden="true">·</span><span>¥${item.priceMin}-${item.priceMax}</span></div>
           <div class="result-address">${escapeHtml(item.address)}</div>
         </div>
         <span class="result-chevron" aria-hidden="true">›</span>
@@ -153,7 +213,8 @@ function renderResults() {
       <div class="result-reasons">${item.reasons.map(reason => `<span class="tag">${escapeHtml(reason)}</span>`).join('')}</div>
       <div class="result-foot"><span>✓ ${escapeHtml(item.verifiedAt)}核验 · ${escapeHtml(item.confidenceLabel)}</span><span>${item.mealMinutes[0]}-${item.mealMinutes[1]} 分钟</span></div>
     </article>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function renderMap() {
@@ -194,7 +255,7 @@ function applyScene(scene) {
 }
 
 function renderOptionGroup(containerId, options, selected, dataKey) {
-  el(containerId).innerHTML = options.map(option => `<button class="option-button ${option.value === selected ? 'selected' : ''}" data-option-group="${dataKey}" data-value="${escapeHtml(option.value)}" type="button">${escapeHtml(option.label)}</button>`).join('');
+  el(containerId).innerHTML = options.map(option => `<button class="option-button ${option.value === selected ? 'selected' : ''}" data-option-group="${dataKey}" data-value="${escapeHtml(option.value)}" type="button">${option.icon ? cuisineIconMarkup(option.value === 'all' ? 'other' : option.value) : ''}${escapeHtml(option.label)}</button>`).join('');
 }
 
 function syncFilterControls() {
@@ -219,11 +280,12 @@ function openDetail(id) {
   const noiseText = ['未知', '很安静', '较安静', '一般', '较热闹', '很热闹'][item.noiseLevel] || '未知';
   const minimumSpendText = item.minSpend ? `最低约 ¥${item.minSpend}` : '无明确最低消费';
   const favorite = isFavorite(id);
+  const cuisine = getCuisine(item.cuisineCode);
 
   el('detailPanel').innerHTML = `
     <div class="detail-cover">
       <button class="close-button detail-close" data-close="detailOverlay" type="button" aria-label="关闭">×</button>
-      <div class="detail-cover-content"><p class="eyebrow">SOLO VERIFIED</p><h2 id="detailTitle">${escapeHtml(item.name)}</h2><p>${escapeHtml(item.cuisine)} · ${item.distance}m · ${escapeHtml(item.district)}</p></div>
+      <div class="detail-cover-content"><p class="eyebrow">SOLO VERIFIED</p><h2 id="detailTitle">${escapeHtml(item.name)}</h2><p class="detail-cuisine">${cuisineIconMarkup(item.cuisineCode, 'detail-cuisine-icon')}${escapeHtml(cuisine.label)} · ${item.distance}m · ${escapeHtml(item.district)}</p></div>
     </div>
     <div class="detail-content">
       <div class="detail-summary">
@@ -262,9 +324,12 @@ function renderFavorites() {
     container.innerHTML = '<div class="empty-list"><strong>还没有收藏</strong>在餐厅详情中点击爱心，收藏会只保存在这台设备。</div>';
     return;
   }
-  container.innerHTML = favoriteItems.map(item => `
-    <div class="favorite-row"><div><h3><button class="text-button" data-open-detail="${item.id}" type="button">${escapeHtml(item.name)} ›</button></h3><p>${escapeHtml(item.cuisine)} · ${item.distance}m · ¥${item.priceMin}-${item.priceMax}</p><small>${escapeHtml(item.reasons[0])}</small><button class="favorite-remove" data-remove-favorite="${item.id}" type="button">取消收藏</button></div><span class="favorite-score">${item.soloScore}</span></div>
-  `).join('');
+  container.innerHTML = favoriteItems.map(item => {
+    const cuisine = getCuisine(item.cuisineCode);
+    return `
+    <div class="favorite-row"><div><h3><button class="text-button" data-open-detail="${item.id}" type="button">${escapeHtml(item.name)} ›</button></h3><p>${cuisineIconMarkup(item.cuisineCode)}${escapeHtml(cuisine.label)} · ${item.distance}m · ¥${item.priceMin}-${item.priceMax}</p><small>${escapeHtml(item.reasons[0])}</small><button class="favorite-remove" data-remove-favorite="${item.id}" type="button">取消收藏</button></div><span class="favorite-score">${item.soloScore}</span></div>
+  `;
+  }).join('');
 }
 
 function openReport(id) {
@@ -326,9 +391,74 @@ function resetFilters() {
 }
 
 function showAllRestaurants() {
+  if (!getCurrentCoverage().searchable) {
+    openLocationSelector();
+    return;
+  }
   state.keyword = '';
   el('searchInput').value = '';
   resetFilters();
+}
+
+function renderLocationSuggestions(query = '') {
+  const normalizedQuery = query.trim().toLowerCase();
+  const matches = locationSuggestions.filter(suggestion => {
+    if (!normalizedQuery) return true;
+    const cityName = getCity(suggestion.cityCode)?.name || '';
+    return `${suggestion.label} ${suggestion.detail} ${cityName}`.toLowerCase().includes(normalizedQuery);
+  });
+
+  el('locationResultHint').textContent = normalizedQuery ? `${matches.length} 个匹配位置` : '最近位置与试点区域';
+  el('locationSuggestions').innerHTML = matches.length
+    ? matches.map(suggestion => {
+      const statusCopy = coverageStatus[suggestion.status] || coverageStatus.unsupported;
+      return `<button class="location-row" data-select-location type="button" data-city-code="${escapeHtml(suggestion.cityCode)}" data-area-code="${escapeHtml(suggestion.areaCode || '')}" data-location-label="${escapeHtml(suggestion.label)}"><span><strong>${escapeHtml(suggestion.label)}</strong><small>${escapeHtml(suggestion.detail)}</small></span><span class="coverage-status" data-status="${escapeHtml(suggestion.status)}">${escapeHtml(statusCopy.label)}</span></button>`;
+    }).join('')
+    : '<div class="location-empty">没有匹配位置，可以从下方城市覆盖中选择。</div>';
+}
+
+function renderCityList() {
+  el('cityList').innerHTML = cities.map(city => {
+    const statusCopy = coverageStatus[city.status] || coverageStatus.unsupported;
+    const areaText = city.areas.length ? city.areas.map(area => area.name).join('、') : '尚无开放区域';
+    return `<button class="city-row ${city.code === state.cityCode ? 'selected' : ''}" data-select-city="${escapeHtml(city.code)}" type="button"><span><strong>${escapeHtml(city.name)}</strong><small>${escapeHtml(areaText)}</small></span><span class="coverage-status" data-status="${escapeHtml(city.status)}">${escapeHtml(statusCopy.label)}</span></button>`;
+  }).join('');
+}
+
+function openLocationSelector() {
+  el('locationSearch').value = '';
+  renderLocationSuggestions();
+  renderCityList();
+  openOverlay('locationOverlay');
+  requestAnimationFrame(() => el('locationSearch').focus());
+}
+
+function selectLocation(cityCode, areaCode, label) {
+  state.cityCode = cityCode;
+  state.coverageAreaCode = areaCode || '';
+  state.locationLabel = label || getCity(cityCode)?.name || '当前位置';
+  state.keyword = '';
+  state.filters.maxDistance = '';
+  el('locationLabel').textContent = state.locationLabel;
+  el('searchInput').value = '';
+  syncFilterControls();
+  closeOverlay('locationOverlay');
+  searchRestaurants();
+
+  const { status } = getCurrentCoverage();
+  if (status === 'beta') showToast('已切换到 Beta 覆盖区域');
+  if (status === 'upcoming') showToast('该区域正在补充数据');
+  if (status === 'paused') showToast('该区域目前暂停更新');
+  if (status === 'unsupported') showToast('该城市暂未覆盖');
+}
+
+function distanceKm(from, to) {
+  const radians = degrees => degrees * Math.PI / 180;
+  const latDelta = radians(to.lat - from.lat);
+  const lngDelta = radians(to.lng - from.lng);
+  const a = Math.sin(latDelta / 2) ** 2
+    + Math.cos(radians(from.lat)) * Math.cos(radians(to.lat)) * Math.sin(lngDelta / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function requestLocation() {
@@ -338,13 +468,29 @@ function requestLocation() {
   }
   el('locationLabel').textContent = '正在定位…';
   navigator.geolocation.getCurrentPosition(
-    () => {
+    position => {
+      const current = { lat: position.coords.latitude, lng: position.coords.longitude };
+      const nearest = cities
+        .filter(city => city.locationCenterWgs84)
+        .map(city => ({ city, distance: distanceKm(current, city.locationCenterWgs84) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+
+      if (nearest && nearest.distance <= 50) {
+        const area = nearest.city.areas.find(candidate => candidate.status === 'live' || candidate.status === 'beta')
+          || nearest.city.areas[0];
+        selectLocation(nearest.city.code, area?.code || '', '当前位置附近');
+        return;
+      }
+
+      state.cityCode = '';
+      state.coverageAreaCode = '';
       state.locationLabel = '当前位置附近';
       el('locationLabel').textContent = state.locationLabel;
-      showToast('已使用当前位置；v0 仍展示试点数据');
+      closeOverlay('locationOverlay');
+      searchRestaurants();
+      showToast('当前位置暂未覆盖，可手动切换城市');
     },
     () => {
-      state.locationLabel = '静安寺附近';
       el('locationLabel').textContent = state.locationLabel;
       showToast('未获得定位，已保留手动位置');
     },
@@ -355,6 +501,21 @@ function requestLocation() {
 function handleDocumentClick(event) {
   const close = event.target.closest('[data-close]');
   if (close) return closeOverlay(close.dataset.close);
+
+  const location = event.target.closest('[data-select-location]');
+  if (location) {
+    selectLocation(location.dataset.cityCode, location.dataset.areaCode, location.dataset.locationLabel);
+    return;
+  }
+
+  const cityChoice = event.target.closest('[data-select-city]');
+  if (cityChoice) {
+    const city = getCity(cityChoice.dataset.selectCity);
+    const area = city?.areas.find(candidate => candidate.status === 'live' || candidate.status === 'beta')
+      || city?.areas[0];
+    if (city) selectLocation(city.code, area?.code || '', city.name);
+    return;
+  }
 
   const detail = event.target.closest('[data-open-detail]');
   if (detail) return openDetail(detail.dataset.openDetail);
@@ -447,8 +608,12 @@ function bindEvents() {
 
   el('favoritesButton').addEventListener('click', () => { renderFavorites(); openOverlay('favoritesOverlay'); });
   el('aboutButton').addEventListener('click', () => { renderPreferenceOptions(); openOverlay('settingsOverlay'); });
-  el('locationButton').addEventListener('click', requestLocation);
-  el('manualLocation').addEventListener('click', requestLocation);
+  el('locationButton').addEventListener('click', openLocationSelector);
+  el('manualLocation').addEventListener('click', openLocationSelector);
+  el('changeCoverageButton').addEventListener('click', openLocationSelector);
+  el('currentLocationButton').addEventListener('click', requestLocation);
+  el('locationSearchForm').addEventListener('submit', event => event.preventDefault());
+  el('locationSearch').addEventListener('input', event => renderLocationSuggestions(event.target.value));
   el('submitReport').addEventListener('click', submitReport);
   el('reportNote').addEventListener('input', event => { el('reportCounter').textContent = event.target.value.length; });
   el('privacyButton').addEventListener('click', () => showToast('位置只在点击后用于当前搜索，不保存轨迹'));
@@ -475,6 +640,7 @@ function bindEvents() {
 }
 
 function initialize() {
+  document.documentElement.dataset.version = WEB_VERSION;
   renderOptionGroup('budgetOptions', budgetOptions, state.filters.budget, 'budget');
   renderOptionGroup('cuisineOptions', cuisineOptions, state.filters.cuisine, 'cuisine');
   renderOptionGroup('distanceOptions', distanceOptions, state.filters.maxDistance, 'maxDistance');

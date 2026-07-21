@@ -6,17 +6,18 @@
     <meta name="theme-color" content="#f8f6f0" />
     <meta name="description" content="一人食：找到一个人也舒服的餐厅。" />
     <title>一人食 · 一个人也好好吃饭</title>
+    <link rel="icon" href="./assets/cuisine/rice-meal.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="site-header">
         <a class="brand-lockup" href="#discover" aria-label="一人食首页">
-          <span class="brand-kicker">SOLO MEAL / V0</span>
+          <span class="brand-kicker">SOLO MEAL / V1 BETA</span>
           <span class="brand-name">一人食</span>
         </a>
         <div class="header-actions">
-          <button class="location-pill" id="locationButton" type="button">
+          <button class="location-pill" id="locationButton" type="button" aria-haspopup="dialog">
             <span class="icon" aria-hidden="true">⌖</span>
             <span id="locationLabel">静安寺附近</span>
           </button>
@@ -31,9 +32,9 @@
             <h1>今天，想在哪里<br /><em>好好吃一顿？</em></h1>
             <p class="hero-subtitle">从一个人也舒服的座位开始选。</p>
           </div>
-          <div class="hero-signal" aria-label="当前试点区域状态">
+          <div class="hero-signal" id="heroSignal" aria-label="当前覆盖区域状态">
             <span class="signal-ring"><span></span></span>
-            <span><strong>试点区域</strong><small>静安寺 · 南京西路</small></span>
+            <span><strong id="coverageKicker">上海试点 · Beta</strong><small id="coverageText">静安 / 黄浦已覆盖</small></span>
           </div>
         </section>
 
@@ -43,7 +44,7 @@
             <input id="searchInput" type="search" placeholder="搜索商圈、地铁站或餐厅" autocomplete="off" />
             <button class="search-submit" type="submit">找店 <span aria-hidden="true">↗</span></button>
           </form>
-          <button class="manual-location" id="manualLocation" type="button"><span aria-hidden="true">●</span> 使用当前位置 <span aria-hidden="true">›</span></button>
+          <button class="manual-location" id="manualLocation" type="button"><span aria-hidden="true">●</span> 选择或搜索位置 <span aria-hidden="true">›</span></button>
         </section>
 
         <section class="scene-section" aria-labelledby="sceneTitle">
@@ -61,11 +62,17 @@
 
         <section class="results-section" aria-labelledby="resultsTitle">
           <div class="section-heading results-heading">
-            <div><p class="eyebrow">CURATED NEARBY</p><h2 id="resultsTitle">附近的稳妥选择 <span id="resultCount">0</span></h2></div>
+            <div><p class="eyebrow">CURATED NEARBY</p><h2 id="resultsTitle"><span class="results-area-title" id="resultsAreaTitle">静安 / 黄浦的稳妥选择</span> <span id="resultCount">0</span></h2></div>
             <div class="heading-actions">
               <button class="text-button" id="favoritesButton" type="button">我的收藏 <span aria-hidden="true">›</span></button>
               <button class="icon-button filter-trigger" id="filterButton" type="button" title="筛选" aria-label="筛选">☷<span class="filter-indicator" id="filterIndicator"></span></button>
             </div>
+          </div>
+
+          <div class="coverage-banner hidden" id="coverageBanner" role="status">
+            <span class="coverage-status" id="coverageStatus">Beta</span>
+            <span id="coverageMessage">数据仍在持续补充，推荐均来自当前静态核验样本。</span>
+            <button class="text-button" id="changeCoverageButton" type="button">更换位置</button>
           </div>
 
           <div class="result-toolbar">
@@ -91,8 +98,8 @@
 
           <div class="empty-state hidden" id="emptyState">
             <span class="empty-symbol">⌁</span>
-            <h3>还没有合适的结果</h3>
-            <p>可以清除搜索和筛选条件，仍然保留“一个人可吃”这个核心条件。</p>
+            <h3 id="emptyTitle">还没有合适的结果</h3>
+            <p id="emptyDescription">可以清除搜索和筛选条件，仍然保留“一个人可吃”这个核心条件。</p>
             <button class="primary-button" id="relaxButton" type="button">查看全部餐厅</button>
           </div>
           <p class="result-note"><span>i</span>排序基于单人座位、单人份、距离和核验新鲜度；不是实时排队数据。</p>
@@ -104,6 +111,27 @@
         <button class="mobile-nav-item" data-nav="favorites" type="button"><span>♡</span>收藏</button>
         <button class="mobile-nav-item" data-nav="settings" type="button"><span>◌</span>我的</button>
       </nav>
+    </div>
+
+    <div class="overlay hidden" id="locationOverlay" role="dialog" aria-modal="true" aria-labelledby="locationTitle">
+      <section class="sheet location-sheet">
+        <div class="sheet-header"><div><p class="eyebrow">CHOOSE YOUR AREA</p><h2 id="locationTitle">选择用餐位置</h2></div><button class="close-button" data-close="locationOverlay" type="button" aria-label="关闭">×</button></div>
+        <div class="location-content">
+          <form class="location-search" id="locationSearchForm">
+            <span aria-hidden="true">⌕</span>
+            <input id="locationSearch" type="search" placeholder="搜索城市、商圈或地铁站" autocomplete="off" />
+          </form>
+          <button class="current-location-row" id="currentLocationButton" type="button"><span class="location-target" aria-hidden="true">⌖</span><span><strong>使用当前位置</strong><small>仅用于本次搜索，不保存轨迹</small></span><b aria-hidden="true">›</b></button>
+          <div class="location-group">
+            <div class="location-group-heading"><h3>位置建议</h3><span id="locationResultHint">当前试点附近</span></div>
+            <div class="location-list" id="locationSuggestions"></div>
+          </div>
+          <div class="location-group">
+            <div class="location-group-heading"><h3>城市覆盖</h3><span>按区域逐步开放</span></div>
+            <div class="city-list" id="cityList"></div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <div class="overlay hidden" id="filterOverlay" role="dialog" aria-modal="true" aria-labelledby="filterTitle">
@@ -148,10 +176,10 @@
     <div class="overlay hidden" id="settingsOverlay" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <section class="sheet settings-sheet">
         <div class="sheet-header"><div><p class="eyebrow">LOCAL PROFILE</p><h2 id="settingsTitle">我的一人食</h2></div><button class="close-button" data-close="settingsOverlay" type="button" aria-label="关闭">×</button></div>
-        <div class="settings-status"><span class="status-orb">1</span><div><strong>本机模式</strong><small>v0 私有收藏 · 无需登录</small></div></div>
+        <div class="settings-status"><span class="status-orb">1</span><div><strong>本机模式</strong><small>v1 Beta 私有收藏 · 无需登录</small></div></div>
         <div class="settings-group"><h3>默认预算</h3><div class="option-grid" id="preferenceOptions"></div></div>
         <div class="settings-group"><h3>数据与隐私</h3><div class="settings-menu"><button type="button" id="privacyButton"><span><strong>位置与隐私</strong><small>一次定位，不保存轨迹</small></span><b>›</b></button><button type="button" id="clearDataButton"><span><strong class="danger-text">清除本机数据</strong><small>收藏、预算与纠错记录</small></span><b>›</b></button></div></div>
-        <div class="settings-note"><strong>一个人吃，也值得被认真对待。</strong><span>v0 只做确定、可核验的信息。</span></div>
+        <div class="settings-note"><strong>一个人吃，也值得被认真对待。</strong><span>v1 Beta 仍只展示确定、可核验的信息。</span></div>
       </section>
     </div>
 

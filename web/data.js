@@ -1,6 +1,7 @@
 export const restaurants = [
   {
     id: 'r001', name: '杉木面所', cuisine: '面食', cuisineCode: 'noodles', district: '静安寺',
+    cityCode: 'shanghai', coverageAreaCode: 'sh-jingan-huangpu',
     address: '华山路 388 号 B1 层', distance: 420, priceMin: 32, priceMax: 48,
     latitude: 31.2231, longitude: 121.4452, openNow: true, hours: '10:30 - 21:30',
     acceptsSolo: true, peakPolicy: '午餐高峰可直接入座，晚餐 18:30 后偶尔需要等位',
@@ -16,6 +17,7 @@ export const restaurants = [
   },
   {
     id: 'r002', name: '米仓食堂', cuisine: '日式简餐', cuisineCode: 'japanese', district: '静安寺',
+    cityCode: 'shanghai', coverageAreaCode: 'sh-jingan-huangpu',
     address: '愚园路 116 号', distance: 680, priceMin: 45, priceMax: 68,
     latitude: 31.2257, longitude: 121.4398, openNow: true, hours: '11:00 - 14:00 / 17:00 - 21:00',
     acceptsSolo: true, peakPolicy: '晚餐高峰建议避开 18:30 - 19:30',
@@ -30,7 +32,8 @@ export const restaurants = [
     dishes: ['照烧鸡腿定食', '盐烤鲭鱼定食', '咖喱猪排饭'], note: '定食分量稳定，适合不想花时间研究菜单的时候。'
   },
   {
-    id: 'r003', name: '南风小馆', cuisine: '本帮菜', cuisineCode: 'local', district: '静安寺',
+    id: 'r003', name: '南风小馆', cuisine: '本帮菜', cuisineCode: 'local_chinese', district: '静安寺',
+    cityCode: 'shanghai', coverageAreaCode: 'sh-jingan-huangpu',
     address: '常德路 702 号', distance: 920, priceMin: 55, priceMax: 85,
     latitude: 31.2274, longitude: 121.4511, openNow: true, hours: '11:00 - 22:00',
     acceptsSolo: true, peakPolicy: '全天接受单人，周末晚餐可能等位',
@@ -46,6 +49,7 @@ export const restaurants = [
   },
   {
     id: 'r004', name: '小满饭团', cuisine: '快餐小吃', cuisineCode: 'fast_food', district: '静安寺',
+    cityCode: 'shanghai', coverageAreaCode: 'sh-jingan-huangpu',
     address: '乌鲁木齐中路 91 号', distance: 1150, priceMin: 18, priceMax: 32,
     latitude: 31.2199, longitude: 121.4518, openNow: true, hours: '07:30 - 20:00',
     acceptsSolo: true, peakPolicy: '早餐和午餐高峰排队，外带更快',
@@ -61,6 +65,7 @@ export const restaurants = [
   },
   {
     id: 'r005', name: '炭町一人烧', cuisine: '烧肉', cuisineCode: 'bbq', district: '静安寺',
+    cityCode: 'shanghai', coverageAreaCode: 'sh-jingan-huangpu',
     address: '陕西北路 430 号 2 楼', distance: 1380, priceMin: 98, priceMax: 168,
     latitude: 31.2312, longitude: 121.4475, openNow: false, hours: '17:00 - 23:00',
     acceptsSolo: true, peakPolicy: '接受单人，周五晚建议提前电话确认',
@@ -75,7 +80,8 @@ export const restaurants = [
     dishes: ['一人牛五花套餐', '盐葱牛舌', '石锅拌饭'], note: '适合想认真吃一顿烧肉的人，价格和用餐时间都更高。'
   },
   {
-    id: 'r006', name: '禾下粥铺', cuisine: '粥饭', cuisineCode: 'rice', district: '南京西路',
+    id: 'r006', name: '禾下粥铺', cuisine: '粥品', cuisineCode: 'congee', district: '南京西路',
+    cityCode: 'shanghai', coverageAreaCode: 'sh-jingan-huangpu',
     address: '南京西路 1688 号 B2 层', distance: 1740, priceMin: 26, priceMax: 42,
     latitude: 31.2298, longitude: 121.4589, openNow: true, hours: '10:00 - 22:00',
     acceptsSolo: true, peakPolicy: '商场餐饮高峰可能需要排队',
