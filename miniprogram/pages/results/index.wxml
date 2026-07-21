@@ -1,0 +1,103 @@
+<view class="page results-page safe-bottom">
+  <view class="results-head">
+    <view class="location-summary" bindtap="useLocation">
+      <text class="location-pin">●</text>
+      <view>
+        <view class="location-label">{{locationLabel}}</view>
+        <view class="location-sub">{{sceneLabel}} · 一个人</view>
+      </view>
+    </view>
+    <button class="filter-icon" bindtap="toggleFilter">☷<text wx:if="{{hasFilters}}" class="filter-dot"></text></button>
+  </view>
+
+  <view class="results-search card">
+    <text class="search-icon">⌕</text>
+    <input value="{{queryText}}" placeholder="换个商圈或餐厅" bindinput="onSearchInput" bindconfirm="submitSearch" confirm-type="search" />
+    <button class="search-go" bindtap="submitSearch">搜索</button>
+  </view>
+
+  <view class="summary-row">
+    <view>
+      <text class="result-count">{{resultCount}} 家</text>
+      <text class="muted">符合当前条件</text>
+    </view>
+    <view class="view-switcher">
+      <button class="view-option {{viewMode === 'list' ? 'selected' : ''}}" bindtap="toggleView">列表</button>
+      <button class="view-option {{viewMode === 'map' ? 'selected' : ''}}" bindtap="toggleView">地图</button>
+    </view>
+  </view>
+
+  <view wx:if="{{viewMode === 'map'}}" class="map-preview card">
+    <view class="map-label map-label-a">静安寺</view>
+    <view class="map-label map-label-b">常德路</view>
+    <view class="map-label map-label-c">南京西路</view>
+    <view class="map-road road-a"></view>
+    <view class="map-road road-b"></view>
+    <view class="map-road road-c"></view>
+    <block wx:for="{{results}}" wx:key="id">
+      <view wx:if="{{index < 6}}" class="map-marker" style="left: {{item.mapLeft}}rpx; top: {{item.mapTop}}rpx;" data-id="{{item.id}}" bindtap="openDetail">
+        <text>{{item.soloScore}}</text>
+      </view>
+    </block>
+    <view class="map-legend"><text class="legend-dot"></text> 单人友好候选 · 点击查看详情</view>
+  </view>
+
+  <view wx:if="{{viewMode === 'list' && !noResult}}" class="result-list">
+    <view wx:for="{{results}}" wx:key="id" class="result-card card" data-id="{{item.id}}" bindtap="openDetail">
+      <view class="result-main">
+        <view class="result-score {{item.confidence}}">
+          <text class="score-number">{{item.soloScore}}</text>
+          <text class="score-label">适合度</text>
+        </view>
+        <view class="result-info">
+          <view class="result-name-line">
+            <text class="result-name">{{item.name}}</text>
+            <text wx:if="{{item.openNow}}" class="open-badge">营业中</text>
+            <text wx:else class="closed-badge">暂未营业</text>
+          </view>
+          <view class="result-meta">{{item.cuisine}} · {{item.distance}}m · ¥{{item.priceMin}}-{{item.priceMax}}</view>
+          <view class="result-address">{{item.address}}</view>
+        </view>
+        <text class="result-chevron">›</text>
+      </view>
+      <view class="result-reasons"><text wx:for="{{item.reasons}}" wx:key="*this" class="tag">{{item}}</text></view>
+      <view class="result-foot"><text>✓ {{item.verifiedAt}}核验 · {{item.confidenceLabel}}</text><text>{{item.mealMinutes[0]}}-{{item.mealMinutes[1]}} 分钟</text></view>
+    </view>
+  </view>
+
+  <view wx:if="{{noResult}}" class="empty-state card">
+    <view class="empty-icon">⌁</view>
+    <view class="empty-title">还没有合适的结果</view>
+    <view class="empty-copy">可以先放宽预算、距离或品类条件，仍然保留“一个人可吃”这个核心条件。</view>
+    <button class="primary-button empty-button" bindtap="clearFilters">放宽条件</button>
+  </view>
+
+  <view class="result-note"><text class="note-mark">i</text><text>排序基于单人座位、单人份、距离和核验新鲜度；不是实时排队数据。</text></view>
+
+  <view wx:if="{{filterOpen}}" class="filter-mask" catchtap="toggleFilter">
+    <view class="filter-sheet" catchtap="noop">
+      <view class="sheet-head"><text class="sheet-title">筛选条件</text><button class="ghost-button" bindtap="clearFilters">重置</button></view>
+      <view class="filter-group">
+        <view class="filter-label">预算上限</view>
+        <view class="filter-options"><button wx:for="{{budgets}}" wx:key="key" class="filter-option {{selectedBudget === item.key ? 'selected' : ''}}" data-value="{{item.key}}" bindtap="chooseBudget">{{item.label}}</button></view>
+      </view>
+      <view class="filter-group">
+        <view class="filter-label">食物品种</view>
+        <view class="filter-options"><button wx:for="{{cuisines}}" wx:key="key" class="filter-option {{selectedCuisine === item.key ? 'selected' : ''}}" data-value="{{item.key}}" bindtap="chooseCuisine">{{item.label}}</button></view>
+      </view>
+      <view class="filter-group">
+        <view class="filter-label">用餐偏好</view>
+        <view class="toggle-list">
+          <button class="toggle-row" bindtap="toggleSolo"><text>只看接待单人</text><text class="toggle {{onlySolo ? 'on' : ''}}"><text></text></text></button>
+          <button class="toggle-row" bindtap="toggleOpenNow"><text>现在营业</text><text class="toggle {{openNow ? 'on' : ''}}"><text></text></text></button>
+          <button class="toggle-row" bindtap="toggleFastMeal"><text>40 分钟内解决</text><text class="toggle {{fastMeal ? 'on' : ''}}"><text></text></text></button>
+        </view>
+      </view>
+      <view class="filter-group">
+        <view class="filter-label">距离</view>
+        <view class="filter-options"><button class="filter-option {{maxDistance === '' ? 'selected' : ''}}" data-value="" bindtap="chooseDistance">不限</button><button class="filter-option {{maxDistance === '1000' ? 'selected' : ''}}" data-value="1000" bindtap="chooseDistance">1 公里内</button><button class="filter-option {{maxDistance === '2000' ? 'selected' : ''}}" data-value="2000" bindtap="chooseDistance">2 公里内</button></view>
+      </view>
+      <button class="primary-button apply-button" bindtap="toggleFilter">查看 {{resultCount}} 家结果</button>
+    </view>
+  </view>
+</view>
