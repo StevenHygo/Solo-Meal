@@ -109,9 +109,19 @@ assert(opsApp.includes("parsedUrl.protocol !== 'https:'"), 'operator API rejects
 assert(opsApp.includes("'/api/v1/admin/poi/imports'"), 'operator workbench imports authorized POI candidates');
 assert(opsApp.includes('/api/v1/admin/poi/candidates'), 'operator workbench reads and reviews POI candidates');
 assert(opsApp.includes('/api/v1/admin/coverage/'), 'operator workbench reads coverage quality gates');
+assert(opsApp.includes('/api/v1/admin/restaurants?status='), 'operator workbench reads restaurant publication queues');
+assert(opsApp.includes('/api/v1/admin/poi/candidates/${encodeURIComponent(state.draftCandidate.id)}/draft'), 'operator workbench creates drafts from new branch candidates');
+assert(opsApp.includes("method: creating ? 'POST' : 'PUT'"), 'operator workbench creates and updates normalized drafts');
+assert(opsApp.includes('/transitions'), 'operator workbench submits publication transitions');
+assert(opsApp.includes("action === 'submit_review'"), 'operator workbench exposes review submission');
+assert(opsApp.includes("action === 'publish'"), 'operator workbench exposes second-operator publication');
+assert(opsApp.includes("action === 'withdraw'"), 'operator workbench exposes withdrawal');
 assert(opsApp.includes('state.poiImportCandidates'), 'operator POI files remain in page memory only');
 assert(opsApp.includes('maximumFractionDigits: 1'), 'operator quality percentages retain one decimal when needed');
 assert(!/data-poi-action="publish"/.test(opsHtml + opsApp), 'POI candidate workflow cannot publish restaurants directly');
+assert(opsHtml.includes('data-mode="restaurants"'), 'operator workbench has a restaurant publication mode');
+assert(opsHtml.includes('id="restaurantDraftForm"'), 'operator workbench provides a structured restaurant draft form');
+assert(opsCss.includes('@media (max-width: 560px)') && opsCss.includes('.compact-grid'), 'operator draft form has a mobile layout contract');
 
 const opsIds = [...opsHtml.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert(new Set(opsIds).size === opsIds.length, 'operator HTML IDs are unique');

@@ -140,6 +140,10 @@ export function toPoiCandidateDto(candidate: PoiCandidateRecord) {
       legacy_id: candidate.matchedRestaurantLegacyId,
       name: candidate.matchedRestaurantName
     } : null,
+    draft_restaurant: candidate.draftRestaurantId ? {
+      id: candidate.draftRestaurantId,
+      status: candidate.draftRestaurantStatus
+    } : null,
     suggested_restaurant: candidate.suggestedRestaurantId ? {
       id: candidate.suggestedRestaurantId,
       legacy_id: candidate.suggestedRestaurantLegacyId,

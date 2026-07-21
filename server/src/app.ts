@@ -13,6 +13,14 @@ import { feedbackPriority, feedbackRequestSchema } from './services/feedback.js'
 import { curationTaskParamsSchema, curationTaskQuerySchema, curationTaskUpdateSchema, toCurationTaskDto } from './services/curation.js';
 import { poiCandidateParamsSchema, poiCandidateQuerySchema, poiCandidateReviewSchema, poiImportRequestSchema, preparePoiImport, toPoiCandidateDto } from './services/poi.js';
 import { coverageQualityUpdateSchema, toCoverageQualityDto } from './services/coverage-quality.js';
+import {
+  managedRestaurantParamsSchema,
+  managedRestaurantQuerySchema,
+  prepareRestaurantDraft,
+  publicationTransitionSchema,
+  restaurantDraftSchema,
+  toManagedRestaurantDto
+} from './services/publishing.js';
 
 interface AppOptions {
   config: AppConfig;
@@ -44,7 +52,7 @@ export async function createApp({ config, repository, clock = () => new Date() }
       if (!origin || config.corsOrigins.includes(origin)) callback(null, true);
       else callback(new Error('ORIGIN_NOT_ALLOWED'), false);
     },
-    methods: ['GET', 'POST', 'PATCH'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH'],
     maxAge: 86400
   });
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
@@ -80,7 +88,17 @@ export async function createApp({ config, repository, clock = () => new Date() }
       POI_CANDIDATE_NOT_FOUND: { status: 404, message: 'POI 候选不存在' },
       INVALID_POI_CANDIDATE_TRANSITION: { status: 409, message: 'POI 候选状态不能这样变更' },
       POI_RESTAURANT_COVERAGE_MISMATCH: { status: 409, message: '候选与目标餐厅不在同一覆盖区域' },
-      PROVIDER_REF_CONFLICT: { status: 409, message: 'Provider POI 已关联其他餐厅' }
+      PROVIDER_REF_CONFLICT: { status: 409, message: 'Provider POI 或餐厅映射已经被占用' },
+      POI_CANDIDATE_NOT_NEW_BRANCH: { status: 409, message: '只有已确认的新分店候选可以建立草稿' },
+      POI_CANDIDATE_DRAFT_IN_PROGRESS: { status: 409, message: '该候选已有餐厅草稿，请在发布流程中继续处理' },
+      RESTAURANT_DRAFT_ALREADY_EXISTS: { status: 409, message: '该候选已经建立餐厅草稿' },
+      MANAGED_RESTAURANT_NOT_FOUND: { status: 404, message: '运营餐厅不存在' },
+      RESTAURANT_DRAFT_NOT_EDITABLE: { status: 409, message: '当前状态不能修改餐厅草稿' },
+      INVALID_PUBLICATION_TRANSITION: { status: 409, message: '餐厅发布状态不能这样变更' },
+      SECOND_REVIEWER_REQUIRED: { status: 409, message: '发布必须由提交审核之外的操作人完成' },
+      PUBLISHING_REQUIREMENTS_NOT_MET: { status: 422, message: '核心单人字段或有效证据不满足发布要求' },
+      SOURCE_CANDIDATE_REQUIRED: { status: 409, message: '餐厅缺少可追溯的来源候选' },
+      INVALID_EVIDENCE_TIME: { status: 400, message: '证据观察时间不能晚于当前时间' }
     };
     const match = known[normalizedError.message];
     if (match) {
@@ -245,6 +263,61 @@ export async function createApp({ config, repository, clock = () => new Date() }
       reviewedAt: clock()
     });
     return { request_id: request.id, candidate: toPoiCandidateDto(candidate) };
+  });
+
+  app.post('/api/v1/admin/poi/candidates/:id/draft', {
+    preHandler: requireAdmin,
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = poiCandidateParamsSchema.parse(request.params);
+    const input = restaurantDraftSchema.parse(request.body);
+    const restaurant = await repository.createRestaurantDraft(id, prepareRestaurantDraft(input, actorId, clock()));
+    return reply.status(201).send({ request_id: request.id, restaurant: toManagedRestaurantDto(restaurant) });
+  });
+
+  app.get('/api/v1/admin/restaurants', { preHandler: requireAdmin }, async request => {
+    const query = managedRestaurantQuerySchema.parse(request.query);
+    const restaurants = await repository.listManagedRestaurants({
+      status: query.status ?? null,
+      coverageAreaId: query.coverage_area_id ?? null,
+      limit: query.limit
+    });
+    return { request_id: request.id, restaurants: restaurants.map(toManagedRestaurantDto) };
+  });
+
+  app.get('/api/v1/admin/restaurants/:id', { preHandler: requireAdmin }, async (request, reply) => {
+    const { id } = managedRestaurantParamsSchema.parse(request.params);
+    const restaurant = await repository.getManagedRestaurant(id);
+    if (!restaurant) return reply.status(404).send({ error: { code: 'MANAGED_RESTAURANT_NOT_FOUND', message: '运营餐厅不存在' }, request_id: request.id });
+    return { request_id: request.id, restaurant: toManagedRestaurantDto(restaurant) };
+  });
+
+  app.put('/api/v1/admin/restaurants/:id/draft', {
+    preHandler: requireAdmin,
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+  }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = managedRestaurantParamsSchema.parse(request.params);
+    const input = restaurantDraftSchema.parse(request.body);
+    const restaurant = await repository.updateRestaurantDraft(id, prepareRestaurantDraft(input, actorId, clock()));
+    return { request_id: request.id, restaurant: toManagedRestaurantDto(restaurant) };
+  });
+
+  app.post('/api/v1/admin/restaurants/:id/transitions', {
+    preHandler: requireAdmin,
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+  }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = managedRestaurantParamsSchema.parse(request.params);
+    const input = publicationTransitionSchema.parse(request.body);
+    const restaurant = await repository.transitionManagedRestaurant(id, {
+      action: input.action,
+      note: input.note,
+      actorId,
+      transitionedAt: clock()
+    });
+    return { request_id: request.id, restaurant: toManagedRestaurantDto(restaurant) };
   });
 
   app.get('/api/v1/admin/coverage/:id/quality', { preHandler: requireAdmin }, async request => {

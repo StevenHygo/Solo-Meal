@@ -26,6 +26,8 @@ interface PoiCandidateRowForTest {
   matched_restaurant_id: string | null;
   matched_restaurant_legacy_id: string | null;
   matched_restaurant_name: string | null;
+  draft_restaurant_id: string | null;
+  draft_restaurant_status: 'draft' | 'review' | 'published' | 'withdrawn' | null;
   suggested_restaurant_id: string | null;
   suggested_restaurant_legacy_id: string | null;
   suggested_restaurant_name: string | null;
@@ -60,6 +62,8 @@ const pendingRow: PoiCandidateRowForTest = {
   matched_restaurant_id: null,
   matched_restaurant_legacy_id: null,
   matched_restaurant_name: null,
+  draft_restaurant_id: null,
+  draft_restaurant_status: null,
   suggested_restaurant_id: '10000000-0000-4000-8000-000000000001',
   suggested_restaurant_legacy_id: 'r001',
   suggested_restaurant_name: '杉木面所',
@@ -99,7 +103,7 @@ function createImportPool() {
   return { pool, calls };
 }
 
-function createReviewPool(options: { coverageMismatch?: boolean } = {}) {
+function createReviewPool(options: { coverageMismatch?: boolean; draftInProgress?: boolean } = {}) {
   const calls: string[] = [];
   let candidateReads = 0;
   const client = {
@@ -108,7 +112,12 @@ function createReviewPool(options: { coverageMismatch?: boolean } = {}) {
       calls.push(normalized);
       if (normalized.includes('FROM poi_candidates pc')) {
         candidateReads += 1;
-        return result<T>([candidateReads === 1 ? pendingRow : {
+        return result<T>([candidateReads === 1 ? (options.draftInProgress ? {
+          ...pendingRow,
+          status: 'new_branch',
+          draft_restaurant_id: '51000000-0000-4000-8000-000000000001',
+          draft_restaurant_status: 'draft'
+        } : pendingRow) : {
           ...pendingRow,
           status: 'matched',
           matched_restaurant_id: '10000000-0000-4000-8000-000000000001',
@@ -242,6 +251,19 @@ test('postgres POI review rolls back a cross-coverage match', async () => {
   }), /POI_RESTAURANT_COVERAGE_MISMATCH/);
   assert.equal(calls.at(-1), 'ROLLBACK');
   assert.equal(calls.some(sql => /INSERT INTO restaurant_provider_refs/.test(sql)), false);
+});
+
+test('postgres POI review cannot replace a candidate with an active restaurant draft', async () => {
+  const { pool, calls } = createReviewPool({ draftInProgress: true });
+  const repository = new PostgresRepository(pool);
+  await assert.rejects(repository.reviewPoiCandidate(pendingRow.id, {
+    decision: 'reject',
+    resolutionNote: '草稿建立后不能从候选队列改写状态',
+    actorId: 'operator.poi',
+    reviewedAt: new Date('2026-07-21T03:30:00.000Z')
+  }), /POI_CANDIDATE_DRAFT_IN_PROGRESS/);
+  assert.equal(calls.at(-1), 'ROLLBACK');
+  assert.equal(calls.some(sql => /^UPDATE poi_candidates/.test(sql)), false);
 });
 
 test('postgres coverage quality update is audited before recomputing the gate metrics', async () => {

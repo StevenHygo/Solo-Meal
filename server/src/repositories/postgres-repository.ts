@@ -2,10 +2,13 @@ import type { CandidateQuery, RestaurantRecord, RestaurantRepository, Repository
 import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, EvidenceSweepResult, FeedbackReceipt, FeedbackSubmission } from '../domain/operations.js';
 import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiCandidateStatus, PoiImportReceipt, PoiImportSubmission } from '../domain/poi.js';
 import type { CoverageQualityManualUpdate, CoverageQualityRecord } from '../domain/coverage-quality.js';
+import type { ManagedRestaurantQuery, ManagedRestaurantRecord, RestaurantDraftSave, RestaurantPublicationTransition, RestaurantPublishStatus } from '../domain/publishing.js';
 import type { City, CoverageArea, LocationSuggestion } from '../domain/types.js';
-import { withTransaction, type DatabasePool } from '../db/pool.js';
+import { rankingConfig } from '../catalog.js';
+import { withTransaction, type DatabaseClient, type DatabasePool } from '../db/pool.js';
 import { addBusinessDays, assertTaskClaim, assertTaskTransition } from '../services/curation.js';
 import { assertPoiCandidateTransition } from '../services/poi.js';
+import { deriveSoloProfile, nextPublicationStatus } from '../services/publishing.js';
 
 interface RestaurantRow {
   id: string;
@@ -92,6 +95,8 @@ interface PoiCandidateRow {
   matched_restaurant_id: string | null;
   matched_restaurant_legacy_id: string | null;
   matched_restaurant_name: string | null;
+  draft_restaurant_id: string | null;
+  draft_restaurant_status: RestaurantPublishStatus | null;
   suggested_restaurant_id: string | null;
   suggested_restaurant_legacy_id: string | null;
   suggested_restaurant_name: string | null;
@@ -102,6 +107,24 @@ interface PoiCandidateRow {
   reviewed_at: string | null;
   first_seen_at: string;
   last_seen_at: string;
+}
+
+interface ManagedRestaurantRow extends RestaurantRow {
+  publish_status: RestaurantPublishStatus;
+  version: number;
+  created_by: string;
+  review_submitted_by: string | null;
+  review_submitted_at: string | null;
+  published_by: string | null;
+  published_at: string | null;
+  withdrawn_by: string | null;
+  withdrawn_at: string | null;
+  status_note: string | null;
+  updated_by: string;
+  updated_at: string;
+  source_candidate_id: string | null;
+  source_provider: string | null;
+  source_provider_poi_id: string | null;
 }
 
 function mapCurationTask(row: CurationTaskRow): CurationTaskRecord {
@@ -146,6 +169,7 @@ const poiCandidateSelect = `
     pc.phone_normalized, pc.raw_category, pc.observed_at::text, pc.status,
     pc.matched_restaurant_id, matched.legacy_id AS matched_restaurant_legacy_id,
     matched.name AS matched_restaurant_name,
+    pc.draft_restaurant_id, draft.publish_status AS draft_restaurant_status,
     pc.suggested_restaurant_id, suggested.legacy_id AS suggested_restaurant_legacy_id,
     suggested.name AS suggested_restaurant_name, pc.suggestion_score,
     pc.match_method, pc.resolution_note, pc.reviewed_by, pc.reviewed_at::text,
@@ -154,6 +178,7 @@ const poiCandidateSelect = `
   JOIN coverage_areas ca ON ca.id = pc.coverage_area_id
   JOIN cities c ON c.id = ca.city_id
   LEFT JOIN restaurants matched ON matched.id = pc.matched_restaurant_id
+  LEFT JOIN restaurants draft ON draft.id = pc.draft_restaurant_id
   LEFT JOIN restaurants suggested ON suggested.id = pc.suggested_restaurant_id
 `;
 
@@ -178,6 +203,8 @@ function mapPoiCandidate(row: PoiCandidateRow): PoiCandidateRecord {
     matchedRestaurantId: row.matched_restaurant_id,
     matchedRestaurantLegacyId: row.matched_restaurant_legacy_id,
     matchedRestaurantName: row.matched_restaurant_name,
+    draftRestaurantId: row.draft_restaurant_id,
+    draftRestaurantStatus: row.draft_restaurant_status,
     suggestedRestaurantId: row.suggested_restaurant_id,
     suggestedRestaurantLegacyId: row.suggested_restaurant_legacy_id,
     suggestedRestaurantName: row.suggested_restaurant_name,
@@ -188,6 +215,29 @@ function mapPoiCandidate(row: PoiCandidateRow): PoiCandidateRecord {
     reviewedAt: row.reviewed_at,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at
+  };
+}
+
+function mapManagedRestaurant(row: ManagedRestaurantRow): ManagedRestaurantRecord {
+  return {
+    restaurant: mapRestaurant(row),
+    sourceCandidate: row.source_candidate_id && row.source_provider && row.source_provider_poi_id ? {
+      id: row.source_candidate_id,
+      provider: row.source_provider,
+      providerPoiId: row.source_provider_poi_id
+    } : null,
+    publishStatus: row.publish_status,
+    version: row.version,
+    createdBy: row.created_by,
+    reviewSubmittedBy: row.review_submitted_by,
+    reviewSubmittedAt: row.review_submitted_at,
+    publishedBy: row.published_by,
+    publishedAt: row.published_at,
+    withdrawnBy: row.withdrawn_by,
+    withdrawnAt: row.withdrawn_at,
+    statusNote: row.status_note,
+    updatedBy: row.updated_by,
+    updatedAt: row.updated_at
   };
 }
 
@@ -251,7 +301,7 @@ function mapRestaurant(row: RestaurantRow): RestaurantRecord {
   };
 }
 
-const restaurantSelect = (distanceExpression: string) => `
+const restaurantSelect = (distanceExpression: string, managed = false) => `
   SELECT
     r.id, r.legacy_id, c.code AS city_code, c.timezone AS city_timezone,
     ca.id AS coverage_area_id, ca.name AS coverage_area_name, ca.status AS coverage_status,
@@ -266,6 +316,11 @@ const restaurantSelect = (distanceExpression: string) => `
     r.noise_level, sp.score AS solo_score, sp.confidence, sp.scoring_version,
     r.last_verified_at::text, sp.reason_codes, hours.items AS hours, r.dishes,
     r.operator_note, evidence_items.items AS evidence
+    ${managed ? `, r.publish_status, r.version, r.created_by, r.review_submitted_by,
+      r.review_submitted_at::text, r.published_by, r.published_at::text,
+      r.withdrawn_by, r.withdrawn_at::text, r.status_note, r.updated_by, r.updated_at::text,
+      pc.id AS source_candidate_id, pc.provider AS source_provider,
+      pc.provider_poi_id AS source_provider_poi_id` : ''}
   FROM restaurants r
   JOIN cities c ON c.id = r.city_id
   JOIN coverage_areas ca ON ca.id = r.coverage_area_id
@@ -291,9 +346,64 @@ const restaurantSelect = (distanceExpression: string) => `
       'sourceType', e.source_type, 'sourceLabel', e.source_label,
       'observedAt', e.observed_at, 'expiresAt', e.expires_at, 'status', e.status
     ) ORDER BY e.observed_at DESC), '[]'::jsonb) AS items
-    FROM evidence e WHERE e.restaurant_id = r.id AND e.status IN ('published', 'expired')
+    FROM evidence e WHERE e.restaurant_id = r.id
+      ${managed ? '' : "AND e.status IN ('published', 'expired')"}
   ) evidence_items ON true
+  ${managed ? 'LEFT JOIN poi_candidates pc ON pc.draft_restaurant_id = r.id' : ''}
 `;
+
+async function replaceDraftRelations(client: DatabaseClient, restaurantId: string, draft: RestaurantDraftSave): Promise<void> {
+  await client.query('DELETE FROM restaurant_cuisines WHERE restaurant_id = $1', [restaurantId]);
+  for (const cuisineCode of draft.cuisineCodes) {
+    await client.query(`
+      INSERT INTO restaurant_cuisines (restaurant_id, cuisine_code, is_primary)
+      VALUES ($1, $2, $3)
+    `, [restaurantId, cuisineCode, cuisineCode === draft.primaryCuisineCode]);
+  }
+
+  await client.query('DELETE FROM restaurant_hours WHERE restaurant_id = $1', [restaurantId]);
+  for (const hours of draft.hours) {
+    await client.query(`
+      INSERT INTO restaurant_hours (
+        restaurant_id, day_of_week, opens_at, closes_at, source_label, observed_at
+      ) VALUES ($1, $2, $3, $4, '运营草稿核验', $5)
+    `, [restaurantId, hours.dayOfWeek, hours.opensAt, hours.closesAt, draft.savedAt]);
+  }
+
+  const profile = deriveSoloProfile(draft);
+  await client.query(`
+    INSERT INTO solo_profiles (
+      restaurant_id, accepts_solo, score, confidence, scoring_version, reason_codes, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (restaurant_id) DO UPDATE SET accepts_solo = EXCLUDED.accepts_solo,
+      score = EXCLUDED.score, confidence = EXCLUDED.confidence,
+      scoring_version = EXCLUDED.scoring_version, reason_codes = EXCLUDED.reason_codes,
+      updated_at = EXCLUDED.updated_at
+  `, [restaurantId, draft.acceptsSolo, profile.score, profile.confidence,
+    rankingConfig.version, profile.reasonCodes, draft.savedAt]);
+
+  await client.query('DELETE FROM evidence WHERE restaurant_id = $1', [restaurantId]);
+  for (const evidence of draft.evidence) {
+    await client.query(`
+      INSERT INTO evidence (
+        restaurant_id, attribute, title, value, source_type, source_label,
+        observed_at, expires_at, status
+      ) VALUES ($1, $2, $3, jsonb_build_object('text', $4::text), $5, $6, $7, $8, 'candidate')
+    `, [restaurantId, evidence.attribute, evidence.title, evidence.value,
+      evidence.sourceType, evidence.sourceLabel, evidence.observedAt, evidence.expiresAt]);
+  }
+}
+
+async function loadManagedRestaurant(
+  source: Pick<DatabaseClient, 'query'>,
+  id: string
+): Promise<ManagedRestaurantRecord | null> {
+  const result = await source.query<ManagedRestaurantRow>(`${restaurantSelect('NULL::double precision', true)}
+    WHERE r.id = $1 LIMIT 1
+  `, [id]);
+  const row = result.rows[0];
+  return row ? mapManagedRestaurant(row) : null;
+}
 
 export class PostgresRepository implements RestaurantRepository {
   constructor(private readonly pool: DatabasePool) {}
@@ -716,6 +826,7 @@ export class PostgresRepository implements RestaurantRepository {
       `, [id]);
       const current = currentResult.rows[0];
       if (!current) throw new Error('POI_CANDIDATE_NOT_FOUND');
+      if (current.draft_restaurant_id) throw new Error('POI_CANDIDATE_DRAFT_IN_PROGRESS');
       const nextStatus = assertPoiCandidateTransition(current.status, review);
       let restaurant: { id: string; coverage_area_id: string } | null = null;
       if (review.decision === 'match_existing') {
@@ -759,6 +870,202 @@ export class PostgresRepository implements RestaurantRepository {
       if (!updated) throw new Error('POI_CANDIDATE_NOT_FOUND');
       return mapPoiCandidate(updated);
     });
+  }
+
+  async createRestaurantDraft(candidateId: string, draft: RestaurantDraftSave): Promise<ManagedRestaurantRecord> {
+    const restaurantId = await withTransaction(this.pool, async client => {
+      const candidateResult = await client.query<{
+        id: string; status: PoiCandidateStatus; draft_restaurant_id: string | null;
+        provider: string; provider_poi_id: string; coverage_area_id: string;
+        city_id: string; source_coord_type: 'wgs84' | 'gcj02'; source_lat: number; source_lng: number;
+        wgs84_lat: number; wgs84_lng: number;
+      }>(`
+        SELECT pc.id, pc.status, pc.draft_restaurant_id, pc.provider, pc.provider_poi_id,
+          pc.coverage_area_id, ca.city_id, pc.source_coord_type, pc.source_lat, pc.source_lng,
+          ST_Y(pc.location_wgs84::geometry) AS wgs84_lat,
+          ST_X(pc.location_wgs84::geometry) AS wgs84_lng
+        FROM poi_candidates pc JOIN coverage_areas ca ON ca.id = pc.coverage_area_id
+        WHERE pc.id = $1 FOR UPDATE OF pc
+      `, [candidateId]);
+      const candidate = candidateResult.rows[0];
+      if (!candidate) throw new Error('POI_CANDIDATE_NOT_FOUND');
+      if (candidate.status !== 'new_branch') throw new Error('POI_CANDIDATE_NOT_NEW_BRANCH');
+      if (candidate.draft_restaurant_id) throw new Error('RESTAURANT_DRAFT_ALREADY_EXISTS');
+      const gcj02 = candidate.source_coord_type === 'gcj02';
+      const insertResult = await client.query<{ id: string }>(`
+        INSERT INTO restaurants (
+          city_id, coverage_area_id, name, address, district,
+          source_coord_type, source_lat, source_lng, gcj02_lat, gcj02_lng, location_wgs84,
+          price_min_fen, price_max_fen, peak_policy, seat_types, counter_seats, solo_portion,
+          min_spend_fen, meal_minutes_min, meal_minutes_max, noise_level, dishes, operator_note,
+          publish_status, version, created_by, updated_by, created_at, updated_at
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7, $8, $9, $10, ST_SetSRID(ST_MakePoint($11, $12), 4326)::geography,
+          $13, $14, $15, $16, $17, $18,
+          $19, $20, $21, $22, $23, $24,
+          'draft', 1, $25, $25, $26, $26
+        ) RETURNING id
+      `, [candidate.city_id, candidate.coverage_area_id, draft.name, draft.address, draft.district,
+        candidate.source_coord_type, candidate.source_lat, candidate.source_lng,
+        gcj02 ? candidate.source_lat : null, gcj02 ? candidate.source_lng : null,
+        candidate.wgs84_lng, candidate.wgs84_lat, draft.priceMinFen, draft.priceMaxFen,
+        draft.peakPolicy, draft.seatTypes, draft.counterSeats, draft.soloPortion,
+        draft.minSpendFen, draft.mealMinutes[0], draft.mealMinutes[1], draft.noiseLevel,
+        draft.dishes, draft.note, draft.actorId, draft.savedAt]);
+      const restaurant = insertResult.rows[0];
+      if (!restaurant) throw new Error('RESTAURANT_DRAFT_INSERT_FAILED');
+      await replaceDraftRelations(client, restaurant.id, draft);
+      await client.query('UPDATE poi_candidates SET draft_restaurant_id = $2, updated_at = $3 WHERE id = $1',
+        [candidateId, restaurant.id, draft.savedAt]);
+      const auditPayload = {
+        candidate_id: candidateId,
+        provider: candidate.provider,
+        provider_poi_id: candidate.provider_poi_id,
+        status: 'draft',
+        version: 1
+      };
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, after_value, created_at)
+        VALUES ($1, 'create_draft', 'restaurant', $2, 'poi_new_branch_draft', $3::jsonb, $4)
+      `, [draft.actorId, restaurant.id, JSON.stringify(auditPayload), draft.savedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('restaurant.draft_created', $1, $2::jsonb, $3, $3)
+      `, [restaurant.id, JSON.stringify({ restaurant_id: restaurant.id, ...auditPayload }), draft.savedAt]);
+      return restaurant.id;
+    });
+    const created = await this.getManagedRestaurant(restaurantId);
+    if (!created) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+    return created;
+  }
+
+  async updateRestaurantDraft(id: string, draft: RestaurantDraftSave): Promise<ManagedRestaurantRecord> {
+    await withTransaction(this.pool, async client => {
+      const currentResult = await client.query<{
+        publish_status: RestaurantPublishStatus; version: number; name: string; address: string; district: string;
+      }>('SELECT publish_status, version, name, address, district FROM restaurants WHERE id = $1 FOR UPDATE', [id]);
+      const current = currentResult.rows[0];
+      if (!current) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+      if (current.publish_status !== 'draft') throw new Error('RESTAURANT_DRAFT_NOT_EDITABLE');
+      await client.query(`
+        UPDATE restaurants SET name = $2, address = $3, district = $4,
+          price_min_fen = $5, price_max_fen = $6, peak_policy = $7, seat_types = $8,
+          counter_seats = $9, solo_portion = $10, min_spend_fen = $11,
+          meal_minutes_min = $12, meal_minutes_max = $13, noise_level = $14,
+          dishes = $15, operator_note = $16, version = version + 1,
+          status_note = NULL, updated_by = $17, updated_at = $18
+        WHERE id = $1
+      `, [id, draft.name, draft.address, draft.district, draft.priceMinFen, draft.priceMaxFen,
+        draft.peakPolicy, draft.seatTypes, draft.counterSeats, draft.soloPortion, draft.minSpendFen,
+        draft.mealMinutes[0], draft.mealMinutes[1], draft.noiseLevel, draft.dishes, draft.note,
+        draft.actorId, draft.savedAt]);
+      await replaceDraftRelations(client, id, draft);
+      const afterValue = { status: 'draft', version: current.version + 1, name: draft.name, address: draft.address, district: draft.district };
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, 'update_draft', 'restaurant', $2, 'operator_draft_edit', $3::jsonb, $4::jsonb, $5)
+      `, [draft.actorId, id,
+        JSON.stringify({ status: current.publish_status, version: current.version, name: current.name, address: current.address, district: current.district }),
+        JSON.stringify(afterValue), draft.savedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('restaurant.draft_updated', $1, $2::jsonb, $3, $3)
+      `, [id, JSON.stringify({ restaurant_id: id, ...afterValue }), draft.savedAt]);
+    });
+    const updated = await this.getManagedRestaurant(id);
+    if (!updated) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+    return updated;
+  }
+
+  async listManagedRestaurants(query: ManagedRestaurantQuery): Promise<ManagedRestaurantRecord[]> {
+    const result = await this.pool.query<ManagedRestaurantRow>(`${restaurantSelect('NULL::double precision', true)}
+      WHERE ($1::restaurant_publish_status IS NULL OR r.publish_status = $1)
+        AND ($2::text IS NULL OR r.coverage_area_id = $2)
+      ORDER BY r.updated_at DESC, r.id LIMIT $3
+    `, [query.status, query.coverageAreaId, query.limit]);
+    return result.rows.map(mapManagedRestaurant);
+  }
+
+  async getManagedRestaurant(id: string): Promise<ManagedRestaurantRecord | null> {
+    return loadManagedRestaurant(this.pool, id);
+  }
+
+  async transitionManagedRestaurant(id: string, transition: RestaurantPublicationTransition): Promise<ManagedRestaurantRecord> {
+    await withTransaction(this.pool, async client => {
+      const lockResult = await client.query<{ id: string }>('SELECT id FROM restaurants WHERE id = $1 FOR UPDATE', [id]);
+      if (!lockResult.rows[0]) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+      const current = await loadManagedRestaurant(client, id);
+      if (!current) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+      const nextStatus = nextPublicationStatus(current, transition);
+      const timestamp = transition.transitionedAt;
+
+      if (transition.action === 'submit_review') {
+        await client.query(`
+          UPDATE restaurants SET publish_status = 'review', review_submitted_by = $2,
+            review_submitted_at = $3, status_note = $4, updated_by = $2, updated_at = $3
+          WHERE id = $1
+        `, [id, transition.actorId, timestamp, transition.note]);
+      } else if (transition.action === 'request_changes') {
+        await client.query(`
+          UPDATE restaurants SET publish_status = 'draft', review_submitted_by = NULL,
+            review_submitted_at = NULL, status_note = $4, updated_by = $2, updated_at = $3
+          WHERE id = $1
+        `, [id, transition.actorId, timestamp, transition.note]);
+      } else if (transition.action === 'publish') {
+        const source = current.sourceCandidate;
+        if (!source) throw new Error('SOURCE_CANDIDATE_REQUIRED');
+        await client.query(`
+          INSERT INTO restaurant_provider_refs (restaurant_id, provider, provider_poi_id, observed_at, raw_category)
+          SELECT $1, pc.provider, pc.provider_poi_id, pc.observed_at, pc.raw_category
+          FROM poi_candidates pc WHERE pc.id = $2
+          ON CONFLICT DO NOTHING
+        `, [id, source.id]);
+        const providerRefResult = await client.query<{ restaurant_id: string }>(`
+          SELECT restaurant_id FROM restaurant_provider_refs
+          WHERE provider = $1 AND provider_poi_id = $2
+        `, [source.provider, source.providerPoiId]);
+        if (providerRefResult.rows[0]?.restaurant_id !== id) throw new Error('PROVIDER_REF_CONFLICT');
+        const restaurantRefResult = await client.query<{ provider_poi_id: string }>(`
+          SELECT provider_poi_id FROM restaurant_provider_refs WHERE restaurant_id = $1 AND provider = $2
+        `, [id, source.provider]);
+        if (restaurantRefResult.rows[0]?.provider_poi_id !== source.providerPoiId) throw new Error('PROVIDER_REF_CONFLICT');
+        await client.query(`UPDATE evidence SET status = 'published' WHERE restaurant_id = $1 AND status = 'candidate'`, [id]);
+        await client.query(`
+          UPDATE restaurants SET publish_status = 'published', published_by = $2, published_at = $3,
+            withdrawn_by = NULL, withdrawn_at = NULL, status_note = $4,
+            last_verified_at = (SELECT max(observed_at) FROM evidence WHERE restaurant_id = $1 AND status = 'published'),
+            updated_by = $2, updated_at = $3 WHERE id = $1
+        `, [id, transition.actorId, timestamp, transition.note]);
+        const candidateResult = await client.query<{ id: string }>(`
+          UPDATE poi_candidates SET status = 'matched', matched_restaurant_id = $2,
+            match_method = 'operator', resolution_note = $3, reviewed_by = $4,
+            reviewed_at = $5, updated_at = $5
+          WHERE id = $1 AND status = 'new_branch' RETURNING id
+        `, [source.id, id, transition.note, transition.actorId, timestamp]);
+        if (!candidateResult.rows[0]) throw new Error('POI_CANDIDATE_NOT_NEW_BRANCH');
+      } else if (transition.action === 'withdraw') {
+        await client.query(`
+          UPDATE restaurants SET publish_status = 'withdrawn', withdrawn_by = $2,
+            withdrawn_at = $3, status_note = $4, updated_by = $2, updated_at = $3 WHERE id = $1
+        `, [id, transition.actorId, timestamp, transition.note]);
+      }
+
+      const afterValue = { status: nextStatus, note: transition.note };
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, $2, 'restaurant', $3, 'restaurant_publication_transition', $4::jsonb, $5::jsonb, $6)
+      `, [transition.actorId, transition.action, id,
+        JSON.stringify({ status: current.publishStatus, version: current.version }),
+        JSON.stringify(afterValue), timestamp]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('restaurant.publication_transitioned', $1, $2::jsonb, $3, $3)
+      `, [id, JSON.stringify({ restaurant_id: id, action: transition.action, ...afterValue }), timestamp]);
+    });
+    const updated = await this.getManagedRestaurant(id);
+    if (!updated) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+    return updated;
   }
 
   async getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord> {

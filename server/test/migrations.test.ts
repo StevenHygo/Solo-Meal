@@ -48,3 +48,15 @@ test('POI candidate pipeline records licensed batches and remains reversible', a
   assert.match(rollback, /DROP TABLE IF EXISTS poi_import_batch_items/);
   assert.match(rollback, /DROP TYPE IF EXISTS poi_candidate_status/);
 });
+
+test('restaurant publishing migration adds dual-review metadata and a reversible candidate link', async () => {
+  const migration = await readFile(path.resolve('migrations', '004_restaurant_publishing.up.sql'), 'utf8');
+  const rollback = await readFile(path.resolve('migrations', '004_restaurant_publishing.down.sql'), 'utf8');
+  assert.match(migration, /ADD COLUMN review_submitted_by text/);
+  assert.match(migration, /ADD COLUMN published_by text/);
+  assert.match(migration, /ADD COLUMN withdrawn_by text/);
+  assert.match(migration, /ADD COLUMN draft_restaurant_id uuid UNIQUE REFERENCES restaurants\(id\)/);
+  assert.match(migration, /CREATE INDEX restaurants_publish_queue_idx/);
+  assert.match(rollback, /DROP COLUMN IF EXISTS draft_restaurant_id/);
+  assert.match(rollback, /DROP COLUMN IF EXISTS review_submitted_by/);
+});

@@ -57,6 +57,8 @@ export interface PoiCandidateRecord {
   matchedRestaurantId: string | null;
   matchedRestaurantLegacyId: string | null;
   matchedRestaurantName: string | null;
+  draftRestaurantId: string | null;
+  draftRestaurantStatus: 'draft' | 'review' | 'published' | 'withdrawn' | null;
   suggestedRestaurantId: string | null;
   suggestedRestaurantLegacyId: string | null;
   suggestedRestaurantName: string | null;

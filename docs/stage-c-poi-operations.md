@@ -9,6 +9,7 @@
 - 只导入已获授权、允许保存相应字段的 Provider 数据；每个批次必须记录来源标签和授权依据。
 - 不接收或保存任意 Provider 原始响应，只保存去重所需的规范化字段。
 - 候选 POI 不进入餐厅搜索。`new_branch` 只表示去重完成，仍需核心字段、单人证据和二次审核。
+- 候选建立餐厅草稿后，POI 决策状态被锁定；不能再从候选队列改为匹配已有或驳回，避免孤立草稿。
 - 名称、地址和 200 米距离只生成重复建议，不自动建立分店映射。
 - `(provider, provider_poi_id)` 是跨批次稳定标识；已关联其他餐厅或覆盖区时必须返回冲突。
 - GCJ-02 原值与规范化 WGS84 坐标分别保存，不把 GCJ-02 标为 EPSG:4326。
@@ -47,26 +48,45 @@
 | --- | --- | --- |
 | `pending` | 等待人工去重 | 匹配已有、新分店、驳回 |
 | `matched` | 已关联规范餐厅和 Provider ID | 终态 |
-| `new_branch` | 未发现重复，等待字段与证据核验 | 可改为匹配已有或驳回 |
+| `new_branch` | 未发现重复，等待字段与证据核验 | 未建草稿时可创建草稿、改为匹配已有或驳回；建草稿后只进入发布流程 |
 | `rejected` | 非餐厅、越界、重复脏数据等 | 终态 |
 
 精确 Provider ID 已存在时，重复导入可直接回放为 `matched`；其他相似度结果只保存 `suggested_restaurant`。高于 `0.8` 的未处理建议会阻断区域准入。
 
 ## 4. API
 
-以下接口都要求 `Authorization: Bearer <ADMIN_API_TOKEN>`；会写入候选、映射、审计或质量指标的 `POST` / `PATCH` 接口还要求 `X-Operator-ID`：
+以下接口都要求 `Authorization: Bearer <ADMIN_API_TOKEN>`；会写入候选、草稿、映射、审计或质量指标的 `POST` / `PUT` / `PATCH` 接口还要求 `X-Operator-ID`：
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `POST` | `/api/v1/admin/poi/imports` | 创建带幂等键的授权导入批次 |
 | `GET` | `/api/v1/admin/poi/candidates` | 按状态和覆盖区域读取候选 |
 | `PATCH` | `/api/v1/admin/poi/candidates/:id` | 人工匹配、新分店或驳回决策 |
+| `POST` | `/api/v1/admin/poi/candidates/:id/draft` | 从 `new_branch` 候选创建规范化餐厅草稿 |
+| `GET` | `/api/v1/admin/restaurants` | 按草稿、待审核、已发布、已撤回读取发布队列 |
+| `GET` | `/api/v1/admin/restaurants/:id` | 读取字段、证据、来源和审核轨迹 |
+| `PUT` | `/api/v1/admin/restaurants/:id/draft` | 更新仍处于 `draft` 的字段、营业时间和证据 |
+| `POST` | `/api/v1/admin/restaurants/:id/transitions` | 提交审核、退回修改、发布或撤回 |
 | `GET` | `/api/v1/admin/coverage/:id/quality` | 读取数据库指标和准入检查 |
 | `PATCH` | `/api/v1/admin/coverage/:id/quality` | 记录人工抽样、条款和演练指标 |
 
 运营台地址为 `/ops/`。令牌只保存在当前页面内存，不写入浏览器存储；非本机 API 必须使用 HTTPS。
 
-## 5. Beta 准入
+## 5. 餐厅发布状态
+
+```text
+new_branch -> draft -> review -> published -> withdrawn
+                 ^        |
+                 +--------+
+```
+
+- 草稿保存规范名称、地址、品类、价格、座位、单人画像、营业时间和可过期证据；草稿不进入公开搜索。
+- `submit_review` 和 `publish` 都会重新检查核心字段、已确认的单人接待和未过期候选证据。
+- `publish` 必须由提交审核之外的操作人执行；同一操作人会收到 `SECOND_REVIEWER_REQUIRED`。
+- 发布事务同时写入 Provider 映射、发布证据、候选匹配、审计和 Outbox；任一步失败即回滚。
+- `withdraw` 会立即把餐厅移出公开搜索。发布或撤回不会自动修改覆盖区域的 `upcoming` / `beta` / `live` 状态。
+
+## 6. Beta 准入
 
 `coverage-beta-v1` 所有条件必须同时满足：
 
@@ -84,14 +104,15 @@
 | 严重数据质量事故连续无发生 | `>= 2 周` | 人工记录 |
 | Provider 条款、隐私、PostGIS 迁移回滚演练 | 全部通过 | 人工记录 |
 
-## 6. Live 准入
+## 7. Live 准入
 
 `coverage-live-v1` 保留 v1 设计的更高门槛：至少 100 家已发布餐厅、2 公里测试点覆盖率不低于 80%、90 天核验率不低于 70%、核心字段完整率不低于 85%、分店错配率不高于 1%、到店符合率不低于 75%、高优纠错五工作日处理率不低于 90%，并连续两周无严重事故。另要求 Provider ID 关联率不低于 95%、无高置信重复待处理，以及三项条款/演练全部通过。
 
-## 7. 当前状态
+## 8. 当前状态
 
 - 仓库没有已授权的真实地图 Provider 数据或生产凭据。
 - 徐家汇、淮海中路等新增区域没有已发布餐厅、抽样记录或 PostGIS 演练证据，必须保持 `upcoming`。
 - 静安/黄浦的 6 条 v0 兼容 fixture 只用于回归，不满足 `coverage-beta-v1`，不能作为真实覆盖证明。
-- 真实 Provider Adapter、核心字段/证据录入、二次审核和发布/撤回界面仍待完成。
+- 核心字段/证据录入、双人审核、发布和撤回已在 fixture、PostgreSQL 事务测试及浏览器闭环中实现。
+- 真实 Provider Adapter、批量导出/失败重试和生产 MFA/RBAC 仍待完成。
 - 真实 PostgreSQL/PostGIS 迁移、空间索引、备份恢复和回滚仍需在具备 Docker 或 `psql` 的环境执行。

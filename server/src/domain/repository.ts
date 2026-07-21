@@ -2,6 +2,7 @@ import type { City, Coordinate, CoverageArea, EvidenceFixture, HoursInterval, Lo
 import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, EvidenceSweepResult, FeedbackReceipt, FeedbackSubmission } from './operations.js';
 import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiImportReceipt, PoiImportSubmission } from './poi.js';
 import type { CoverageQualityManualUpdate, CoverageQualityRecord } from './coverage-quality.js';
+import type { ManagedRestaurantQuery, ManagedRestaurantRecord, RestaurantDraftSave, RestaurantPublicationTransition } from './publishing.js';
 
 export interface RestaurantHours extends HoursInterval {
   dayOfWeek: number | null;
@@ -79,6 +80,11 @@ export interface RestaurantRepository {
   importPoiCandidates(input: PoiImportSubmission): Promise<PoiImportReceipt>;
   listPoiCandidates(query: PoiCandidateQuery): Promise<PoiCandidateRecord[]>;
   reviewPoiCandidate(id: string, review: PoiCandidateReview): Promise<PoiCandidateRecord>;
+  createRestaurantDraft(candidateId: string, draft: RestaurantDraftSave): Promise<ManagedRestaurantRecord>;
+  updateRestaurantDraft(id: string, draft: RestaurantDraftSave): Promise<ManagedRestaurantRecord>;
+  listManagedRestaurants(query: ManagedRestaurantQuery): Promise<ManagedRestaurantRecord[]>;
+  getManagedRestaurant(id: string): Promise<ManagedRestaurantRecord | null>;
+  transitionManagedRestaurant(id: string, transition: RestaurantPublicationTransition): Promise<ManagedRestaurantRecord>;
   getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord>;
   updateCoverageQuality(areaId: string, update: CoverageQualityManualUpdate): Promise<CoverageQualityRecord>;
   close(): Promise<void>;

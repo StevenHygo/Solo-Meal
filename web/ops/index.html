@@ -30,6 +30,7 @@
     <nav class="mode-nav" id="modeNav" aria-label="运营工作区">
       <button class="active" data-mode="tasks" type="button" aria-pressed="true">纠错复核</button>
       <button data-mode="poi" type="button" aria-pressed="false">POI 候选</button>
+      <button data-mode="restaurants" type="button" aria-pressed="false">餐厅发布</button>
     </nav>
 
     <main class="workspace" id="taskWorkspace">
@@ -140,6 +141,85 @@
             </div>
           </form>
           <div class="resolved-block hidden" id="poiResolvedBlock"><span>处理记录</span><strong id="poiResolvedValue">-</strong></div>
+        </div>
+      </section>
+    </main>
+
+    <main class="workspace hidden" id="restaurantWorkspace">
+      <aside class="queue-panel" aria-labelledby="restaurantQueueTitle">
+        <div class="panel-heading"><div><p>PUBLICATION QUEUE</p><h2 id="restaurantQueueTitle">发布队列 <span id="restaurantCount">0</span></h2></div><button class="icon-button" id="refreshRestaurantButton" type="button" title="刷新发布队列" aria-label="刷新发布队列">↻</button></div>
+        <div class="status-tabs" id="restaurantStatusTabs" role="tablist" aria-label="餐厅发布状态">
+          <button class="active" data-restaurant-status="draft" role="tab" aria-selected="true" type="button">草稿</button>
+          <button data-restaurant-status="review" role="tab" aria-selected="false" type="button">待审核</button>
+          <button data-restaurant-status="published" role="tab" aria-selected="false" type="button">已发布</button>
+          <button data-restaurant-status="withdrawn" role="tab" aria-selected="false" type="button">已撤回</button>
+        </div>
+        <div class="task-list" id="restaurantList"><div class="queue-empty">连接后读取发布队列</div></div>
+      </aside>
+
+      <section class="detail-panel" aria-labelledby="restaurantDetailTitle">
+        <div class="detail-empty" id="restaurantDetailEmpty"><span aria-hidden="true">◎</span><strong>选择一条餐厅记录</strong></div>
+        <div class="detail-content restaurant-detail hidden" id="restaurantDetailContent">
+          <div class="detail-heading"><div><p>RESTAURANT RECORD</p><h2 id="restaurantDetailTitle">餐厅草稿</h2></div><span class="priority-badge" id="restaurantStatusBadge">草稿</span></div>
+          <dl class="task-facts">
+            <div><dt>来源</dt><dd id="restaurantSourceValue">-</dd></div>
+            <div><dt>覆盖区域</dt><dd id="restaurantCoverageValue">-</dd></div>
+            <div><dt>版本</dt><dd id="restaurantVersionValue">-</dd></div>
+            <div><dt>更新</dt><dd id="restaurantUpdatedValue">-</dd></div>
+          </dl>
+
+          <form class="restaurant-form" id="restaurantDraftForm">
+            <section class="form-section">
+              <div class="form-section-heading"><h3>基本信息</h3><span id="restaurantDraftContext">规范化分店</span></div>
+              <div class="form-grid">
+                <label><span>餐厅名称</span><input id="restaurantNameInput" type="text" maxlength="160" required></label>
+                <label><span>商圈 / 区域</span><input id="restaurantDistrictInput" type="text" maxlength="80" required></label>
+                <label class="span-2"><span>地址</span><input id="restaurantAddressInput" type="text" maxlength="300" required></label>
+                <label><span>主品类</span><select id="restaurantPrimaryCuisineInput" required>
+                  <option value="">请选择</option><option value="rice_meal">盖饭简餐</option><option value="noodles">面馆粉店</option><option value="dumplings_buns">饺子包点</option><option value="congee">粥汤小食</option><option value="fast_food">快餐汉堡</option><option value="japanese">日料</option><option value="korean">韩餐</option><option value="local_chinese">地方菜</option><option value="hotpot">火锅冒菜</option><option value="bbq">烧烤</option><option value="western">西餐</option><option value="cafe_bakery">咖啡烘焙</option><option value="dessert_drinks">甜品饮品</option><option value="vegetarian">素食</option><option value="seafood">海鲜</option><option value="other">其他</option>
+                </select></label>
+                <label><span>附加品类代码</span><input id="restaurantCuisineCodesInput" type="text" maxlength="240"></label>
+              </div>
+            </section>
+
+            <section class="form-section">
+              <div class="form-section-heading"><h3>单人画像</h3><span>价格、座位与就餐节奏</span></div>
+              <div class="form-grid compact-grid">
+                <label><span>最低人均（元）</span><input id="restaurantPriceMinInput" type="number" min="0" max="10000" step="0.01" required></label>
+                <label><span>最高人均（元）</span><input id="restaurantPriceMaxInput" type="number" min="0" max="10000" step="0.01" required></label>
+                <label><span>最短用餐（分钟）</span><input id="restaurantMealMinInput" type="number" min="1" max="480" required></label>
+                <label><span>最长用餐（分钟）</span><input id="restaurantMealMaxInput" type="number" min="1" max="480" required></label>
+                <label><span>吧台座位</span><input id="restaurantCounterSeatsInput" type="number" min="0" max="1000" required></label>
+                <label><span>最低消费（元）</span><input id="restaurantMinSpendInput" type="number" min="0" max="10000" step="0.01"></label>
+                <label><span>噪声等级</span><select id="restaurantNoiseInput" required><option value="1">1 安静</option><option value="2">2 较安静</option><option value="3">3 一般</option><option value="4">4 较热闹</option><option value="5">5 热闹</option></select></label>
+                <label><span>座位类型</span><input id="restaurantSeatTypesInput" type="text" maxlength="300" required></label>
+                <label class="toggle-field"><input id="restaurantAcceptsSoloInput" type="checkbox"><span>确认接待单人</span></label>
+                <label class="toggle-field"><input id="restaurantSoloPortionInput" type="checkbox"><span>提供单人份</span></label>
+                <label class="span-2"><span>高峰接待规则</span><textarea id="restaurantPeakPolicyInput" maxlength="300" rows="2" required></textarea></label>
+                <label class="span-2"><span>代表菜品</span><input id="restaurantDishesInput" type="text" maxlength="1000"></label>
+                <label class="span-2"><span>运营备注</span><textarea id="restaurantNoteInput" maxlength="500" rows="3"></textarea></label>
+              </div>
+            </section>
+
+            <section class="form-section">
+              <div class="form-section-heading"><h3>营业时间</h3><button class="icon-button small-icon-button" id="addHoursButton" type="button" title="增加营业时段" aria-label="增加营业时段">+</button></div>
+              <div class="repeat-list" id="restaurantHoursRows"></div>
+            </section>
+
+            <section class="form-section">
+              <div class="form-section-heading"><h3>核验证据</h3><button class="icon-button small-icon-button" id="addEvidenceButton" type="button" title="增加证据" aria-label="增加证据">+</button></div>
+              <div class="repeat-list" id="restaurantEvidenceRows"></div>
+            </section>
+
+            <div class="form-save-row" id="restaurantSaveRow"><button class="primary-button" id="saveRestaurantDraftButton" type="submit">保存草稿</button><span id="restaurantDirtyState">所有更改已保存</span></div>
+          </form>
+
+          <section class="workflow-block" id="restaurantWorkflowBlock">
+            <div class="form-section-heading"><h3>发布流程</h3><span id="restaurantWorkflowSummary">-</span></div>
+            <div class="workflow-timeline" id="restaurantWorkflowTimeline"></div>
+            <label><span>操作说明</span><textarea id="restaurantTransitionNoteInput" minlength="5" maxlength="500" rows="3"></textarea><small><span id="restaurantTransitionNoteCount">0</span> / 500</small></label>
+            <div class="review-actions" id="restaurantReviewActions"></div>
+          </section>
         </div>
       </section>
     </main>

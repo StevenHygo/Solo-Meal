@@ -4,11 +4,13 @@ import type { CandidateQuery, RestaurantRecord, RestaurantRepository, Repository
 import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, EvidenceSweepResult, FeedbackReceipt, FeedbackSubmission } from '../domain/operations.js';
 import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiImportReceipt, PoiImportSubmission } from '../domain/poi.js';
 import type { CoverageQualityManualUpdate, CoverageQualityRecord } from '../domain/coverage-quality.js';
+import type { ManagedRestaurantQuery, ManagedRestaurantRecord, RestaurantDraftSave, RestaurantPublicationTransition } from '../domain/publishing.js';
 import type { City, Coordinate, CoverageArea, LocationSuggestion, RestaurantFixture } from '../domain/types.js';
 import { v0Restaurants } from '../fixtures/v0-restaurants.js';
 import { normalizeToWgs84 } from '../geo/coordinates.js';
 import { addBusinessDays, assertTaskClaim, assertTaskTransition } from '../services/curation.js';
 import { assertPoiCandidateTransition } from '../services/poi.js';
+import { deriveSoloProfile, nextPublicationStatus } from '../services/publishing.js';
 
 function distanceMeters(left: Coordinate, right: Coordinate): number {
   const radians = (degrees: number) => degrees * Math.PI / 180;
@@ -97,6 +99,7 @@ export class FixtureRepository implements RestaurantRepository {
   private readonly poiCandidateIdByProviderRef = new Map<string, string>();
   private readonly providerRefs = new Map<string, string>();
   private readonly manualCoverageQuality = new Map<string, Partial<CoverageQualityRecord['metrics']>>();
+  private readonly managedRestaurants = new Map<string, ManagedRestaurantRecord>();
 
   async health(): Promise<RepositoryHealth> {
     return { ok: true, source: 'fixture', latencyMs: 0 };
@@ -124,27 +127,37 @@ export class FixtureRepository implements RestaurantRepository {
 
   async findCandidates(query: CandidateQuery): Promise<RestaurantRecord[]> {
     const keyword = query.keyword.toLowerCase();
-    return v0Restaurants.flatMap(fixture => {
-      if (fixture.coverageAreaId !== query.coverageAreaId) return [];
-      if (keyword && !`${fixture.name} ${fixture.address} ${fixture.district}`.toLowerCase().includes(keyword)) return [];
-      if (query.budgetMaxFen !== null && fixture.priceMinFen > query.budgetMaxFen) return [];
-      if (query.cuisineCodes.length && !fixture.cuisineCodes.some(code => query.cuisineCodes.includes(code))) return [];
-      if (query.onlySoloVerified && !fixture.acceptsSolo) return [];
-      if (query.fastMeal && fixture.mealMinutes[1] > 40) return [];
-      const normalized = normalizeToWgs84(fixture.sourceLocation, fixture.sourceCoordType);
-      const distanceM = distanceMeters(query.locationWgs84, normalized);
+    const records = [
+      ...v0Restaurants.map(fixture => toRecord(fixture, null)),
+      ...[...this.managedRestaurants.values()]
+        .filter(item => item.publishStatus === 'published')
+        .map(item => structuredClone(item.restaurant))
+    ];
+    return records.flatMap(restaurant => {
+      if (restaurant.coverageArea.id !== query.coverageAreaId) return [];
+      if (keyword && !`${restaurant.name} ${restaurant.address} ${restaurant.district}`.toLowerCase().includes(keyword)) return [];
+      if (query.budgetMaxFen !== null && restaurant.priceMinFen > query.budgetMaxFen) return [];
+      if (query.cuisineCodes.length && !restaurant.cuisineCodes.some(code => query.cuisineCodes.includes(code))) return [];
+      if (query.onlySoloVerified && !restaurant.acceptsSolo) return [];
+      if (query.fastMeal && restaurant.mealMinutes[1] > 40) return [];
+      const distanceM = distanceMeters(query.locationWgs84, restaurant.locationWgs84);
       if (distanceM > query.radiusM) return [];
-      return [toRecord(fixture, distanceM)];
+      return [{ ...restaurant, distanceM }];
     });
   }
 
   async findRestaurant(id: string): Promise<RestaurantRecord | null> {
     const fixture = v0Restaurants.find(item => item.id === id || item.legacyId === id);
-    return fixture ? toRecord(fixture, null) : null;
+    if (fixture) return toRecord(fixture, null);
+    const managed = this.managedRestaurants.get(id);
+    return managed?.publishStatus === 'published' ? structuredClone(managed.restaurant) : null;
   }
 
   async createFeedbackReport(input: FeedbackSubmission): Promise<FeedbackReceipt> {
-    const restaurant = v0Restaurants.find(item => item.id === input.restaurantId || item.legacyId === input.restaurantId);
+    const fixture = v0Restaurants.find(item => item.id === input.restaurantId || item.legacyId === input.restaurantId);
+    const managed = this.managedRestaurants.get(input.restaurantId);
+    const restaurant = fixture ? toRecord(fixture, null)
+      : managed?.publishStatus === 'published' ? managed.restaurant : null;
     if (!restaurant) throw new Error('RESTAURANT_NOT_FOUND');
     const existing = this.feedbackByKey.get(input.idempotencyKey);
     if (existing) {
@@ -158,8 +171,7 @@ export class FixtureRepository implements RestaurantRepository {
     const reportId = randomUUID();
     const taskId = randomUUID();
     const receivedAt = input.submittedAt.toISOString();
-    const cityTimezone = cities.find(city => city.code === restaurant.cityCode)?.timezone ?? 'Asia/Shanghai';
-    const dueAt = addBusinessDays(input.submittedAt, 5, cityTimezone).toISOString();
+    const dueAt = addBusinessDays(input.submittedAt, 5, restaurant.cityTimezone).toISOString();
     const receipt: FeedbackReceipt = { reportId, taskId, status: 'open', created: true, receivedAt };
     this.feedbackByKey.set(input.idempotencyKey, { input: { ...input }, receipt });
     this.tasks.set(taskId, {
@@ -216,12 +228,19 @@ export class FixtureRepository implements RestaurantRepository {
   async sweepExpiredEvidence(at: Date, _actorId: string): Promise<EvidenceSweepResult> {
     const affectedRestaurants = new Set<string>();
     let expiredEvidence = 0;
-    for (const restaurant of v0Restaurants) {
+    const restaurants = [
+      ...v0Restaurants.map(fixture => toRecord(fixture, null)),
+      ...[...this.managedRestaurants.values()]
+        .filter(item => item.publishStatus === 'published')
+        .map(item => item.restaurant)
+    ];
+    for (const restaurant of restaurants) {
       for (const evidence of restaurant.evidence) {
         if (!evidence.expiresAt || new Date(evidence.expiresAt) > at) continue;
         const evidenceId = `${restaurant.id}:${evidence.attribute}:${evidence.observedAt}`;
         if (this.expiredEvidence.has(evidenceId)) continue;
         this.expiredEvidence.add(evidenceId);
+        evidence.status = 'expired';
         affectedRestaurants.add(restaurant.id);
         expiredEvidence += 1;
       }
@@ -233,7 +252,9 @@ export class FixtureRepository implements RestaurantRepository {
         && task.reason === 'evidence_expired'
         && (task.status === 'open' || task.status === 'in_progress'));
       if (existing) continue;
-      const restaurant = v0Restaurants.find(item => item.id === restaurantId);
+      const fixture = v0Restaurants.find(item => item.id === restaurantId);
+      const managed = this.managedRestaurants.get(restaurantId);
+      const restaurant = fixture ? toRecord(fixture, null) : managed?.restaurant;
       if (!restaurant) continue;
       const taskId = randomUUID();
       const timestamp = at.toISOString();
@@ -279,9 +300,21 @@ export class FixtureRepository implements RestaurantRepository {
       const existing = existingId ? this.poiCandidates.get(existingId) : undefined;
       if (existing && existing.coverageAreaId !== input.coverageAreaId) throw new Error('POI_COVERAGE_MISMATCH');
       const exactRestaurantId = this.providerRefs.get(refKey) ?? null;
-      const exactRestaurant = exactRestaurantId
+      const exactFixture = exactRestaurantId
         ? v0Restaurants.find(restaurant => restaurant.id === exactRestaurantId || restaurant.legacyId === exactRestaurantId)
         : null;
+      const exactManaged = exactRestaurantId ? this.managedRestaurants.get(exactRestaurantId) : null;
+      const exactRestaurant = exactFixture ? {
+        id: exactFixture.id,
+        legacyId: exactFixture.legacyId,
+        name: exactFixture.name,
+        coverageAreaId: exactFixture.coverageAreaId
+      } : exactManaged ? {
+        id: exactManaged.restaurant.id,
+        legacyId: exactManaged.restaurant.legacyId,
+        name: exactManaged.restaurant.name,
+        coverageAreaId: exactManaged.restaurant.coverageArea.id
+      } : null;
       if (exactRestaurant && exactRestaurant.coverageAreaId !== input.coverageAreaId) throw new Error('POI_COVERAGE_MISMATCH');
       const suggestion = exactRestaurant ? null : suggestFixtureRestaurant(candidate, input.coverageAreaId);
       const id = existing?.id ?? randomUUID();
@@ -306,6 +339,10 @@ export class FixtureRepository implements RestaurantRepository {
         matchedRestaurantId: exactRestaurant?.id ?? existing?.matchedRestaurantId ?? null,
         matchedRestaurantLegacyId: exactRestaurant?.legacyId ?? existing?.matchedRestaurantLegacyId ?? null,
         matchedRestaurantName: exactRestaurant?.name ?? existing?.matchedRestaurantName ?? null,
+        draftRestaurantId: existing?.draftRestaurantId ?? null,
+        draftRestaurantStatus: existing?.draftRestaurantId
+          ? (this.managedRestaurants.get(existing.draftRestaurantId)?.publishStatus ?? existing.draftRestaurantStatus)
+          : null,
         suggestedRestaurantId: exactRestaurant ? exactRestaurant.id : (suggestion?.restaurant.id ?? existing?.suggestedRestaurantId ?? null),
         suggestedRestaurantLegacyId: exactRestaurant ? exactRestaurant.legacyId : (suggestion?.restaurant.legacyId ?? existing?.suggestedRestaurantLegacyId ?? null),
         suggestedRestaurantName: exactRestaurant ? exactRestaurant.name : (suggestion?.restaurant.name ?? existing?.suggestedRestaurantName ?? null),
@@ -348,10 +385,23 @@ export class FixtureRepository implements RestaurantRepository {
   async reviewPoiCandidate(id: string, review: PoiCandidateReview): Promise<PoiCandidateRecord> {
     const candidate = this.poiCandidates.get(id);
     if (!candidate) throw new Error('POI_CANDIDATE_NOT_FOUND');
+    if (candidate.draftRestaurantId) throw new Error('POI_CANDIDATE_DRAFT_IN_PROGRESS');
     const nextStatus = assertPoiCandidateTransition(candidate.status, review);
-    let restaurant: (typeof v0Restaurants)[number] | null = null;
+    let restaurant: { id: string; legacyId: string | null; name: string; coverageAreaId: string } | null = null;
     if (review.decision === 'match_existing') {
-      restaurant = v0Restaurants.find(item => item.id === review.restaurantId || item.legacyId === review.restaurantId) ?? null;
+      const fixture = v0Restaurants.find(item => item.id === review.restaurantId || item.legacyId === review.restaurantId);
+      const managed = review.restaurantId ? this.managedRestaurants.get(review.restaurantId) : null;
+      restaurant = fixture ? {
+        id: fixture.id,
+        legacyId: fixture.legacyId,
+        name: fixture.name,
+        coverageAreaId: fixture.coverageAreaId
+      } : managed?.publishStatus === 'published' ? {
+        id: managed.restaurant.id,
+        legacyId: managed.restaurant.legacyId,
+        name: managed.restaurant.name,
+        coverageAreaId: managed.restaurant.coverageArea.id
+      } : null;
       if (!restaurant) throw new Error('RESTAURANT_NOT_FOUND');
       if (restaurant.coverageAreaId !== candidate.coverageAreaId) throw new Error('POI_RESTAURANT_COVERAGE_MISMATCH');
       const refKey = `${candidate.provider}:${candidate.providerPoiId}`;
@@ -378,13 +428,237 @@ export class FixtureRepository implements RestaurantRepository {
     return structuredClone(next);
   }
 
+  async createRestaurantDraft(candidateId: string, draft: RestaurantDraftSave): Promise<ManagedRestaurantRecord> {
+    const candidate = this.poiCandidates.get(candidateId);
+    if (!candidate) throw new Error('POI_CANDIDATE_NOT_FOUND');
+    if (candidate.status !== 'new_branch') throw new Error('POI_CANDIDATE_NOT_NEW_BRANCH');
+    if (candidate.draftRestaurantId) throw new Error('RESTAURANT_DRAFT_ALREADY_EXISTS');
+    const coverage = await this.getCoverageArea(candidate.coverageAreaId);
+    if (!coverage) throw new Error('COVERAGE_AREA_NOT_FOUND');
+    const id = randomUUID();
+    const profile = deriveSoloProfile(draft);
+    const timestamp = draft.savedAt.toISOString();
+    const restaurant: RestaurantRecord = {
+      id,
+      legacyId: null,
+      cityCode: candidate.cityCode,
+      cityTimezone: coverage.cityTimezone,
+      coverageArea: { id: coverage.id, name: coverage.name, status: coverage.status },
+      name: draft.name,
+      address: draft.address,
+      district: draft.district,
+      locationWgs84: { ...candidate.locationWgs84 },
+      locationGcj02: candidate.sourceCoordType === 'gcj02' ? { ...candidate.sourceLocation } : null,
+      distanceM: null,
+      primaryCuisineCode: draft.primaryCuisineCode,
+      cuisineCodes: [...draft.cuisineCodes],
+      priceMinFen: draft.priceMinFen,
+      priceMaxFen: draft.priceMaxFen,
+      acceptsSolo: draft.acceptsSolo,
+      peakPolicy: draft.peakPolicy,
+      seatTypes: [...draft.seatTypes],
+      counterSeats: draft.counterSeats,
+      soloPortion: draft.soloPortion,
+      minSpendFen: draft.minSpendFen,
+      mealMinutes: [...draft.mealMinutes],
+      noiseLevel: draft.noiseLevel,
+      soloScore: profile.score,
+      confidence: profile.confidence,
+      scoringVersion: rankingConfig.version,
+      lastVerifiedAt: null,
+      reasonCodes: profile.reasonCodes,
+      hours: draft.hours.map(hours => ({ ...hours, specialDate: null, isClosed: false })),
+      dishes: [...draft.dishes],
+      note: draft.note,
+      evidence: draft.evidence.map(evidence => ({
+        attribute: evidence.attribute,
+        title: evidence.title,
+        value: evidence.value,
+        sourceType: evidence.sourceType,
+        sourceLabel: evidence.sourceLabel,
+        observedAt: evidence.observedAt.toISOString(),
+        expiresAt: evidence.expiresAt.toISOString(),
+        status: 'candidate'
+      }))
+    };
+    const managed: ManagedRestaurantRecord = {
+      restaurant,
+      sourceCandidate: { id: candidate.id, provider: candidate.provider, providerPoiId: candidate.providerPoiId },
+      publishStatus: 'draft',
+      version: 1,
+      createdBy: draft.actorId,
+      reviewSubmittedBy: null,
+      reviewSubmittedAt: null,
+      publishedBy: null,
+      publishedAt: null,
+      withdrawnBy: null,
+      withdrawnAt: null,
+      statusNote: null,
+      updatedBy: draft.actorId,
+      updatedAt: timestamp
+    };
+    this.managedRestaurants.set(id, managed);
+    this.poiCandidates.set(candidateId, {
+      ...candidate,
+      draftRestaurantId: id,
+      draftRestaurantStatus: 'draft'
+    });
+    return structuredClone(managed);
+  }
+
+  async updateRestaurantDraft(id: string, draft: RestaurantDraftSave): Promise<ManagedRestaurantRecord> {
+    const current = this.managedRestaurants.get(id);
+    if (!current) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+    if (current.publishStatus !== 'draft') throw new Error('RESTAURANT_DRAFT_NOT_EDITABLE');
+    const profile = deriveSoloProfile(draft);
+    const next: ManagedRestaurantRecord = {
+      ...current,
+      restaurant: {
+        ...current.restaurant,
+        name: draft.name,
+        address: draft.address,
+        district: draft.district,
+        primaryCuisineCode: draft.primaryCuisineCode,
+        cuisineCodes: [...draft.cuisineCodes],
+        priceMinFen: draft.priceMinFen,
+        priceMaxFen: draft.priceMaxFen,
+        acceptsSolo: draft.acceptsSolo,
+        peakPolicy: draft.peakPolicy,
+        seatTypes: [...draft.seatTypes],
+        counterSeats: draft.counterSeats,
+        soloPortion: draft.soloPortion,
+        minSpendFen: draft.minSpendFen,
+        mealMinutes: [...draft.mealMinutes],
+        noiseLevel: draft.noiseLevel,
+        soloScore: profile.score,
+        confidence: profile.confidence,
+        reasonCodes: profile.reasonCodes,
+        hours: draft.hours.map(hours => ({ ...hours, specialDate: null, isClosed: false })),
+        dishes: [...draft.dishes],
+        note: draft.note,
+        evidence: draft.evidence.map(evidence => ({
+          attribute: evidence.attribute,
+          title: evidence.title,
+          value: evidence.value,
+          sourceType: evidence.sourceType,
+          sourceLabel: evidence.sourceLabel,
+          observedAt: evidence.observedAt.toISOString(),
+          expiresAt: evidence.expiresAt.toISOString(),
+          status: 'candidate'
+        }))
+      },
+      version: current.version + 1,
+      statusNote: null,
+      updatedBy: draft.actorId,
+      updatedAt: draft.savedAt.toISOString()
+    };
+    this.managedRestaurants.set(id, next);
+    return structuredClone(next);
+  }
+
+  async listManagedRestaurants(query: ManagedRestaurantQuery): Promise<ManagedRestaurantRecord[]> {
+    return [...this.managedRestaurants.values()]
+      .filter(item => query.status === null || item.publishStatus === query.status)
+      .filter(item => query.coverageAreaId === null || item.restaurant.coverageArea.id === query.coverageAreaId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.restaurant.id.localeCompare(right.restaurant.id))
+      .slice(0, query.limit)
+      .map(item => structuredClone(item));
+  }
+
+  async getManagedRestaurant(id: string): Promise<ManagedRestaurantRecord | null> {
+    const managed = this.managedRestaurants.get(id);
+    return managed ? structuredClone(managed) : null;
+  }
+
+  async transitionManagedRestaurant(id: string, transition: RestaurantPublicationTransition): Promise<ManagedRestaurantRecord> {
+    const current = this.managedRestaurants.get(id);
+    if (!current) throw new Error('MANAGED_RESTAURANT_NOT_FOUND');
+    const nextStatus = nextPublicationStatus(current, transition);
+    const timestamp = transition.transitionedAt.toISOString();
+    let restaurant = structuredClone(current.restaurant);
+    let reviewSubmittedBy = current.reviewSubmittedBy;
+    let reviewSubmittedAt = current.reviewSubmittedAt;
+    let publishedBy = current.publishedBy;
+    let publishedAt = current.publishedAt;
+    let withdrawnBy = current.withdrawnBy;
+    let withdrawnAt = current.withdrawnAt;
+
+    if (transition.action === 'submit_review') {
+      reviewSubmittedBy = transition.actorId;
+      reviewSubmittedAt = timestamp;
+    } else if (transition.action === 'request_changes') {
+      reviewSubmittedBy = null;
+      reviewSubmittedAt = null;
+    } else if (transition.action === 'publish') {
+      const source = current.sourceCandidate;
+      if (!source) throw new Error('SOURCE_CANDIDATE_REQUIRED');
+      const refKey = `${source.provider}:${source.providerPoiId}`;
+      const currentRef = this.providerRefs.get(refKey);
+      if (currentRef && currentRef !== id) throw new Error('PROVIDER_REF_CONFLICT');
+      const currentRestaurantRef = [...this.providerRefs.entries()].find(([key, restaurantId]) =>
+        restaurantId === id && key.startsWith(`${source.provider}:`));
+      if (currentRestaurantRef && currentRestaurantRef[0] !== refKey) throw new Error('PROVIDER_REF_CONFLICT');
+      this.providerRefs.set(refKey, id);
+      restaurant.evidence = restaurant.evidence.map(evidence => ({ ...evidence, status: 'published' }));
+      restaurant.lastVerifiedAt = restaurant.evidence
+        .map(evidence => evidence.observedAt)
+        .sort((left, right) => right.localeCompare(left))[0] ?? timestamp;
+      publishedBy = transition.actorId;
+      publishedAt = timestamp;
+      const candidate = this.poiCandidates.get(source.id);
+      if (!candidate) throw new Error('POI_CANDIDATE_NOT_FOUND');
+      this.poiCandidates.set(source.id, {
+        ...candidate,
+        status: 'matched',
+        matchedRestaurantId: id,
+        matchedRestaurantLegacyId: null,
+        matchedRestaurantName: restaurant.name,
+        draftRestaurantStatus: 'published',
+        matchMethod: 'operator',
+        resolutionNote: transition.note,
+        reviewedBy: transition.actorId,
+        reviewedAt: timestamp
+      });
+    } else if (transition.action === 'withdraw') {
+      withdrawnBy = transition.actorId;
+      withdrawnAt = timestamp;
+    }
+
+    const next: ManagedRestaurantRecord = {
+      ...current,
+      restaurant,
+      publishStatus: nextStatus,
+      reviewSubmittedBy,
+      reviewSubmittedAt,
+      publishedBy,
+      publishedAt,
+      withdrawnBy,
+      withdrawnAt,
+      statusNote: transition.note,
+      updatedBy: transition.actorId,
+      updatedAt: timestamp
+    };
+    this.managedRestaurants.set(id, next);
+    if (current.sourceCandidate) {
+      const candidate = this.poiCandidates.get(current.sourceCandidate.id);
+      if (candidate) this.poiCandidates.set(candidate.id, { ...candidate, draftRestaurantStatus: nextStatus });
+    }
+    return structuredClone(next);
+  }
+
   async getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord> {
     const coverage = await this.getCoverageArea(areaId);
     if (!coverage) throw new Error('COVERAGE_AREA_NOT_FOUND');
-    const restaurants = v0Restaurants.filter(restaurant => restaurant.coverageAreaId === areaId);
+    const restaurants = [
+      ...v0Restaurants.map(fixture => toRecord(fixture, null)),
+      ...[...this.managedRestaurants.values()]
+        .filter(item => item.publishStatus === 'published')
+        .map(item => item.restaurant)
+    ].filter(restaurant => restaurant.coverageArea.id === areaId);
     const published = restaurants.length;
     const recentCutoff = at.getTime() - 90 * 86400000;
-    const recent = restaurants.filter(restaurant => new Date(restaurant.lastVerifiedAt).getTime() >= recentCutoff).length;
+    const recent = restaurants.filter(restaurant => restaurant.lastVerifiedAt
+      && new Date(restaurant.lastVerifiedAt).getTime() >= recentCutoff).length;
     const complete = restaurants.filter(restaurant => restaurant.acceptsSolo !== null
       && restaurant.priceMinFen >= 0
       && restaurant.primaryCuisineCode.length > 0

@@ -70,6 +70,25 @@ test('configuration, city, suggestion, search and detail contracts work together
   }
 });
 
+test('CORS preflight allows browser draft updates with PUT', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  try {
+    const response = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/v1/admin/restaurants/51000000-0000-4000-8000-000000000001/draft',
+      headers: {
+        origin: 'http://127.0.0.1:4173',
+        'access-control-request-method': 'PUT',
+        'access-control-request-headers': 'authorization,content-type,x-operator-id'
+      }
+    });
+    assert.equal(response.statusCode, 204);
+    assert.match(response.headers['access-control-allow-methods'] ?? '', /PUT/);
+  } finally {
+    await app.close();
+  }
+});
+
 test('search filters, coverage states and cursor pagination are deterministic', async () => {
   const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
   try {
@@ -444,6 +463,150 @@ test('authorized POI imports remain candidates until an operator resolves dedupl
     assert.equal(search.statusCode, 200);
     assert.equal(search.json().results.length, 5);
     assert.equal(search.json().results.some((item: { name: string }) => item.name === '待核验新分店'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('new branch draft requires valid evidence and a second operator before publication', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  const editorHeaders = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.editor'
+  };
+  const reviewerHeaders = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.reviewer'
+  };
+  const draftPayload = {
+    name: '青禾单人食堂',
+    address: '常熟路 88 号',
+    district: '静安寺',
+    cuisine_codes: ['rice_meal'],
+    primary_cuisine_code: 'rice_meal',
+    price_min_fen: 2800,
+    price_max_fen: 4600,
+    accepts_solo: true,
+    peak_policy: '午餐高峰可排队取餐，单人无需拼桌',
+    seat_types: ['吧台', '双人桌'],
+    counter_seats: 8,
+    solo_portion: true,
+    min_spend_fen: null,
+    meal_minutes: { min: 20, max: 35 },
+    noise_level: 2,
+    hours: Array.from({ length: 7 }, (_, day) => ({ day_of_week: day, opens_at: '10:00', closes_at: '22:00' })),
+    dishes: ['照烧鸡饭', '番茄牛腩饭'],
+    note: '本地发布流程回归样例。',
+    evidence: [{
+      attribute: 'accepts_solo',
+      title: '单人接待',
+      value: '店员确认全天接待单人，无需拼桌',
+      source_type: 'operator_call',
+      source_label: '运营电话核验',
+      observed_at: '2026-07-20T04:00:00.000Z',
+      expires_at: '2026-10-20T04:00:00.000Z'
+    }]
+  };
+  try {
+    const imported = await app.inject({
+      method: 'POST', url: '/api/v1/admin/poi/imports', headers: editorHeaders,
+      payload: {
+        coverage_area_id: 'sh-jingan-huangpu',
+        provider: 'licensed_map',
+        source_label: '发布流程授权样例',
+        authorization_basis: '测试环境授权数据，仅用于发布状态机回归',
+        idempotency_key: '1421ed55-408f-4c70-88e1-59a599d660f2',
+        candidates: [{
+          provider_poi_id: 'publish-flow-001', name: draftPayload.name, address: draftPayload.address,
+          district: draftPayload.district,
+          location: { lat: 31.221, lng: 121.449, coord_type: 'gcj02' },
+          raw_category: '盖饭', observed_at: '2026-07-20T04:00:00.000Z'
+        }]
+      }
+    });
+    assert.equal(imported.statusCode, 201);
+    const pending = await app.inject({
+      method: 'GET', url: '/api/v1/admin/poi/candidates?status=pending', headers: editorHeaders
+    });
+    const candidate = pending.json().candidates.find((item: { provider_poi_id: string }) => item.provider_poi_id === 'publish-flow-001');
+    assert.ok(candidate);
+    const newBranch = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/poi/candidates/${candidate.id}`, headers: editorHeaders,
+      payload: { decision: 'new_branch', resolution_note: '未发现重复分店，进入核心字段核验' }
+    });
+    assert.equal(newBranch.statusCode, 200);
+
+    const created = await app.inject({
+      method: 'POST', url: `/api/v1/admin/poi/candidates/${candidate.id}/draft`,
+      headers: editorHeaders, payload: draftPayload
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const restaurantId = created.json().restaurant.id;
+    assert.equal(created.json().restaurant.status, 'draft');
+    assert.equal(created.json().restaurant.fields.evidence[0].status, 'candidate');
+
+    const invalidCandidateRewrite = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/poi/candidates/${candidate.id}`, headers: editorHeaders,
+      payload: { decision: 'reject', resolution_note: '草稿建立后不能从候选队列改写状态' }
+    });
+    assert.equal(invalidCandidateRewrite.statusCode, 409);
+    assert.equal(invalidCandidateRewrite.json().error.code, 'POI_CANDIDATE_DRAFT_IN_PROGRESS');
+
+    const beforePublish = await app.inject({ method: 'POST', url: '/api/v1/restaurants/search', payload: searchPayload() });
+    assert.equal(beforePublish.json().results.some((item: { id: string }) => item.id === restaurantId), false);
+
+    const updated = await app.inject({
+      method: 'PUT', url: `/api/v1/admin/restaurants/${restaurantId}/draft`, headers: editorHeaders,
+      payload: { ...draftPayload, price_max_fen: 4800 }
+    });
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.json().restaurant.version, 2);
+    assert.equal(updated.json().restaurant.fields.price.max_fen, 4800);
+
+    const submitted = await app.inject({
+      method: 'POST', url: `/api/v1/admin/restaurants/${restaurantId}/transitions`, headers: editorHeaders,
+      payload: { action: 'submit_review', note: '核心字段和单人接待证据已核验' }
+    });
+    assert.equal(submitted.statusCode, 200);
+    assert.equal(submitted.json().restaurant.status, 'review');
+
+    const selfPublish = await app.inject({
+      method: 'POST', url: `/api/v1/admin/restaurants/${restaurantId}/transitions`, headers: editorHeaders,
+      payload: { action: 'publish', note: '尝试由提交人自行发布应被拒绝' }
+    });
+    assert.equal(selfPublish.statusCode, 409);
+    assert.equal(selfPublish.json().error.code, 'SECOND_REVIEWER_REQUIRED');
+
+    const published = await app.inject({
+      method: 'POST', url: `/api/v1/admin/restaurants/${restaurantId}/transitions`, headers: reviewerHeaders,
+      payload: { action: 'publish', note: '二次审核通过，允许进入公开搜索' }
+    });
+    assert.equal(published.statusCode, 200, published.body);
+    assert.equal(published.json().restaurant.status, 'published');
+    assert.equal(published.json().restaurant.fields.evidence[0].status, 'published');
+    assert.equal(published.json().restaurant.workflow.published_by, 'operator.reviewer');
+
+    const afterPublish = await app.inject({ method: 'POST', url: '/api/v1/restaurants/search', payload: searchPayload() });
+    assert.equal(afterPublish.json().results.some((item: { id: string }) => item.id === restaurantId), true);
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/restaurants/${restaurantId}` });
+    assert.equal(detail.statusCode, 200);
+    assert.equal(detail.json().restaurant.evidence[0].source_type, 'operator_call');
+
+    const matched = await app.inject({
+      method: 'GET', url: '/api/v1/admin/poi/candidates?status=matched', headers: reviewerHeaders
+    });
+    const publishedCandidate = matched.json().candidates.find((item: { id: string }) => item.id === candidate.id);
+    assert.equal(publishedCandidate.matched_restaurant.id, restaurantId);
+    assert.equal(publishedCandidate.draft_restaurant.status, 'published');
+
+    const withdrawn = await app.inject({
+      method: 'POST', url: `/api/v1/admin/restaurants/${restaurantId}/transitions`, headers: reviewerHeaders,
+      payload: { action: 'withdraw', note: '回归验证撤回后立即退出公开搜索' }
+    });
+    assert.equal(withdrawn.statusCode, 200);
+    assert.equal(withdrawn.json().restaurant.status, 'withdrawn');
+    const afterWithdraw = await app.inject({ method: 'POST', url: '/api/v1/restaurants/search', payload: searchPayload() });
+    assert.equal(afterWithdraw.json().results.some((item: { id: string }) => item.id === restaurantId), false);
   } finally {
     await app.close();
   }

@@ -10,9 +10,20 @@ const reportLabels = {
 
 const statusLabels = { open: '待处理', in_progress: '处理中', completed: '已完成', cancelled: '已驳回' };
 const poiStatusLabels = { pending: '待去重', matched: '已匹配', new_branch: '新分店', rejected: '已驳回' };
+const restaurantStatusLabels = { draft: '草稿', review: '待审核', published: '已发布', withdrawn: '已撤回' };
+const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const evidenceAttributeLabels = {
+  accepts_solo: '单人接待', seating: '座位情况', ordering: '点餐规则',
+  minimum_spend: '最低消费', solo_portion: '单人份'
+};
+const evidenceSourceLabels = {
+  operator_visit: '运营到店', operator_call: '运营电话', menu_review: '菜单核验', merchant_provided: '商户提供'
+};
 const state = {
   apiBase: '', token: '', operator: '', mode: 'tasks', status: 'open', tasks: [], selectedTaskId: null,
-  poiStatus: 'pending', poiCandidates: [], selectedPoiId: null, poiImportCandidates: [], busy: false
+  poiStatus: 'pending', poiCandidates: [], selectedPoiId: null, poiImportCandidates: [],
+  restaurantStatus: 'draft', restaurants: [], selectedRestaurantId: null, draftCandidate: null,
+  restaurantDirty: false, busy: false
 };
 const el = id => document.getElementById(id);
 
@@ -83,6 +94,10 @@ function currentTask() {
 
 function currentPoiCandidate() {
   return state.poiCandidates.find(candidate => candidate.id === state.selectedPoiId) || null;
+}
+
+function currentRestaurant() {
+  return state.restaurants.find(restaurant => restaurant.id === state.selectedRestaurantId) || null;
 }
 
 function renderActions(task) {
@@ -211,7 +226,9 @@ function renderPoiActions(candidate) {
   if (candidate.status === 'pending') {
     actions.innerHTML = '<button class="primary-button" data-poi-action="match_existing" type="button">匹配已有分店</button><button class="secondary-button" data-poi-action="new_branch" type="button">确认为新分店</button><button class="danger-button" data-poi-action="reject" type="button">驳回候选</button>';
   } else if (candidate.status === 'new_branch') {
-    actions.innerHTML = '<button class="primary-button" data-poi-action="match_existing" type="button">改为匹配已有</button><button class="danger-button" data-poi-action="reject" type="button">驳回候选</button>';
+    actions.innerHTML = candidate.draft_restaurant
+      ? '<button class="primary-button" data-poi-action="open_draft" type="button">打开餐厅草稿</button>'
+      : '<button class="primary-button" data-poi-action="create_draft" type="button">创建餐厅草稿</button><button class="secondary-button" data-poi-action="match_existing" type="button">改为匹配已有</button><button class="danger-button" data-poi-action="reject" type="button">驳回候选</button>';
   } else {
     actions.innerHTML = '';
   }
@@ -245,7 +262,8 @@ function renderPoiDetail() {
     || '';
   el('poiResolutionInput').value = candidate.resolution_note || '';
   el('poiResolutionCount').textContent = el('poiResolutionInput').value.length;
-  const terminal = candidate.status === 'matched' || candidate.status === 'rejected';
+  const terminal = candidate.status === 'matched' || candidate.status === 'rejected'
+    || candidate.draft_restaurant?.status === 'published' || candidate.draft_restaurant?.status === 'withdrawn';
   el('poiReviewForm').classList.toggle('hidden', terminal);
   el('poiResolvedBlock').classList.toggle('hidden', !terminal);
   el('poiResolvedValue').textContent = candidate.resolution_note || '未填写处理说明';
@@ -276,9 +294,317 @@ async function loadPoiCandidates({ preserveSelection = false } = {}) {
   }
 }
 
+function splitList(value) {
+  return [...new Set(String(value || '').split(/[，,]/).map(item => item.trim()).filter(Boolean))];
+}
+
+function toLocalDateTime(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = part => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function defaultEvidence() {
+  const observed = new Date();
+  const expires = new Date(observed.getTime() + 90 * 86400000);
+  return {
+    attribute: 'accepts_solo', title: '单人接待确认', value: '', source_type: 'operator_call',
+    source_label: '运营电话核验', observed_at: observed.toISOString(), expires_at: expires.toISOString()
+  };
+}
+
+function hoursRow(hours = { dayOfWeek: 1, opensAt: '11:00', closesAt: '21:00' }) {
+  const day = hours.dayOfWeek ?? hours.day_of_week ?? 1;
+  return `
+    <div class="repeat-row" data-hours-row>
+      <label><span>星期</span><select data-hours-field="day_of_week" required>${weekdayLabels.map((label, index) => `<option value="${index}" ${index === day ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label><span>开始</span><input data-hours-field="opens_at" type="time" value="${escapeHtml(hours.opensAt ?? hours.opens_at ?? '11:00')}" required></label>
+      <label><span>结束</span><input data-hours-field="closes_at" type="time" value="${escapeHtml(hours.closesAt ?? hours.closes_at ?? '21:00')}" required></label>
+      <button class="remove-row-button" data-remove-hours type="button" title="移除营业时段" aria-label="移除营业时段">×</button>
+    </div>`;
+}
+
+function evidenceRow(evidence = defaultEvidence()) {
+  return `
+    <div class="repeat-row evidence-row" data-evidence-row>
+      <label><span>核验属性</span><select data-evidence-field="attribute" required>${Object.entries(evidenceAttributeLabels).map(([value, label]) => `<option value="${value}" ${value === evidence.attribute ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label><span>来源类型</span><select data-evidence-field="source_type" required>${Object.entries(evidenceSourceLabels).map(([value, label]) => `<option value="${value}" ${value === evidence.source_type ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <button class="remove-row-button" data-remove-evidence type="button" title="移除证据" aria-label="移除证据">×</button>
+      <label><span>证据标题</span><input data-evidence-field="title" type="text" maxlength="120" value="${escapeHtml(evidence.title)}" required></label>
+      <label><span>来源标签</span><input data-evidence-field="source_label" type="text" maxlength="160" value="${escapeHtml(evidence.source_label)}" required></label>
+      <label class="evidence-wide"><span>核验结论</span><textarea data-evidence-field="value" maxlength="500" rows="2" required>${escapeHtml(evidence.value)}</textarea></label>
+      <label><span>观察时间</span><input data-evidence-field="observed_at" type="datetime-local" value="${escapeHtml(toLocalDateTime(evidence.observed_at))}" required></label>
+      <label><span>有效期至</span><input data-evidence-field="expires_at" type="datetime-local" value="${escapeHtml(toLocalDateTime(evidence.expires_at))}" required></label>
+    </div>`;
+}
+
+function setRestaurantDirty(dirty) {
+  state.restaurantDirty = dirty;
+  const label = el('restaurantDirtyState');
+  label.dataset.dirty = String(dirty);
+  label.textContent = state.draftCandidate && dirty ? '尚未创建' : dirty ? '有未保存更改' : '所有更改已保存';
+}
+
+function setDraftEditable(editable) {
+  el('restaurantDraftForm').querySelectorAll('input, textarea, select, button').forEach(control => {
+    control.disabled = !editable;
+  });
+  el('restaurantSaveRow').classList.toggle('hidden', !editable);
+}
+
+function renderRestaurantList() {
+  el('restaurantCount').textContent = state.restaurants.length;
+  const list = el('restaurantList');
+  if (!state.restaurants.length) {
+    list.innerHTML = '<div class="queue-empty">当前状态没有餐厅记录</div>';
+    if (!state.draftCandidate) renderRestaurantDetail();
+    return;
+  }
+  list.innerHTML = state.restaurants.map(record => `
+    <button class="task-row ${record.id === state.selectedRestaurantId ? 'active' : ''}" data-restaurant-id="${escapeHtml(record.id)}" type="button">
+      <span class="candidate-source restaurant-status-mark" data-status="${escapeHtml(record.status)}">${escapeHtml(record.status === 'published' ? 'ON' : record.status === 'withdrawn' ? 'OFF' : `V${record.version}`)}</span>
+      <span><strong>${escapeHtml(record.fields.name)}</strong><small>${escapeHtml(record.fields.district)} · ${escapeHtml(record.coverage_area.name)}</small></span>
+      <time>${escapeHtml(formatTime(record.workflow.updated_at))}</time>
+    </button>
+  `).join('');
+}
+
+function renderWorkflow(record) {
+  const workflow = record.workflow;
+  el('restaurantWorkflowSummary').textContent = workflow.status_note || restaurantStatusLabels[record.status];
+  const steps = [
+    ['创建', workflow.created_by, null],
+    ['提交审核', workflow.review_submitted_by, workflow.review_submitted_at],
+    ['发布', workflow.published_by, workflow.published_at],
+    ['撤回', workflow.withdrawn_by, workflow.withdrawn_at]
+  ];
+  el('restaurantWorkflowTimeline').innerHTML = steps.map(([label, actor, at]) => `
+    <div class="workflow-step"><span>${label}</span><strong>${actor ? `${escapeHtml(actor)}<br>${escapeHtml(formatTime(at))}` : '未发生'}</strong></div>
+  `).join('');
+  const actions = el('restaurantReviewActions');
+  if (record.status === 'draft') {
+    actions.innerHTML = '<button class="primary-button" data-restaurant-action="submit_review" type="button">提交审核</button>';
+  } else if (record.status === 'review') {
+    actions.innerHTML = '<button class="primary-button" data-restaurant-action="publish" type="button">发布餐厅</button><button class="secondary-button" data-restaurant-action="request_changes" type="button">退回修改</button>';
+  } else if (record.status === 'published') {
+    actions.innerHTML = '<button class="danger-button" data-restaurant-action="withdraw" type="button">撤回餐厅</button>';
+  } else {
+    actions.innerHTML = '';
+  }
+  const hasAction = record.status !== 'withdrawn';
+  el('restaurantTransitionNoteInput').closest('label').classList.toggle('hidden', !hasAction);
+}
+
+function fillRestaurantForm(record) {
+  const fields = record?.fields;
+  const candidate = state.draftCandidate;
+  el('restaurantNameInput').value = fields?.name || candidate?.name || '';
+  el('restaurantAddressInput').value = fields?.address || candidate?.address || '';
+  el('restaurantDistrictInput').value = fields?.district || candidate?.district || '';
+  el('restaurantPrimaryCuisineInput').value = fields?.primary_cuisine_code || '';
+  el('restaurantCuisineCodesInput').value = fields ? fields.cuisine_codes.filter(code => code !== fields.primary_cuisine_code).join(', ') : '';
+  el('restaurantPriceMinInput').value = fields ? String(fields.price.min_fen / 100) : '20';
+  el('restaurantPriceMaxInput').value = fields ? String(fields.price.max_fen / 100) : '50';
+  el('restaurantAcceptsSoloInput').checked = fields?.accepts_solo === true;
+  el('restaurantPeakPolicyInput').value = fields?.peak_policy || '';
+  el('restaurantSeatTypesInput').value = fields?.seat_types?.join(', ') || '';
+  el('restaurantCounterSeatsInput').value = String(fields?.counter_seats ?? 0);
+  el('restaurantSoloPortionInput').checked = fields?.solo_portion === true;
+  el('restaurantMinSpendInput').value = fields?.min_spend_fen === null || fields?.min_spend_fen === undefined ? '' : String(fields.min_spend_fen / 100);
+  el('restaurantMealMinInput').value = String(fields?.meal_minutes?.min ?? 20);
+  el('restaurantMealMaxInput').value = String(fields?.meal_minutes?.max ?? 40);
+  el('restaurantNoiseInput').value = String(fields?.noise_level ?? 3);
+  el('restaurantDishesInput').value = fields?.dishes?.join(', ') || '';
+  el('restaurantNoteInput').value = fields?.note || '';
+  el('restaurantHoursRows').innerHTML = (fields?.hours?.length ? fields.hours : [{ dayOfWeek: 1, opensAt: '11:00', closesAt: '21:00' }]).map(hoursRow).join('');
+  el('restaurantEvidenceRows').innerHTML = (fields?.evidence?.length ? fields.evidence : [defaultEvidence()]).map(evidenceRow).join('');
+}
+
+function renderRestaurantDetail() {
+  const record = currentRestaurant();
+  const creating = Boolean(state.draftCandidate && !record);
+  const visible = Boolean(record || creating);
+  el('restaurantDetailEmpty').classList.toggle('hidden', visible);
+  el('restaurantDetailContent').classList.toggle('hidden', !visible);
+  if (!visible) return;
+  const status = record?.status || 'draft';
+  el('restaurantDetailTitle').textContent = record?.fields.name || state.draftCandidate.name;
+  el('restaurantStatusBadge').textContent = creating ? '新草稿' : restaurantStatusLabels[status];
+  el('restaurantStatusBadge').dataset.status = status;
+  const source = record?.source_candidate || state.draftCandidate;
+  el('restaurantSourceValue').textContent = source ? `${source.provider} / ${source.provider_poi_id}` : '-';
+  el('restaurantCoverageValue').textContent = record?.coverage_area.name || state.draftCandidate.coverage_area.name;
+  el('restaurantVersionValue').textContent = record ? `v${record.version}` : '未创建';
+  el('restaurantUpdatedValue').textContent = record ? formatTime(record.workflow.updated_at) : '-';
+  el('restaurantDraftContext').textContent = creating ? '来源候选预填' : `ID ${record.id}`;
+  fillRestaurantForm(record);
+  const editable = creating || record.status === 'draft';
+  setDraftEditable(editable);
+  el('saveRestaurantDraftButton').textContent = creating ? '创建草稿' : '保存草稿';
+  el('restaurantWorkflowBlock').classList.toggle('hidden', creating);
+  el('restaurantTransitionNoteInput').value = record?.workflow.status_note || '';
+  el('restaurantTransitionNoteCount').textContent = el('restaurantTransitionNoteInput').value.length;
+  if (record) renderWorkflow(record);
+  setRestaurantDirty(creating);
+}
+
+async function loadRestaurants({ preserveSelection = false, selectedId = null } = {}) {
+  if (!state.token || state.busy) return;
+  state.busy = true;
+  setConnection('idle', '正在读取');
+  try {
+    const response = await request(`/api/v1/admin/restaurants?status=${encodeURIComponent(state.restaurantStatus)}&limit=100`);
+    state.restaurants = response.restaurants;
+    const preferred = selectedId || (preserveSelection ? state.selectedRestaurantId : null);
+    state.selectedRestaurantId = state.draftCandidate
+      ? null
+      : state.restaurants.some(record => record.id === preferred) ? preferred : state.restaurants[0]?.id || null;
+    renderRestaurantList();
+    renderRestaurantDetail();
+    setConnection('ready', '已连接');
+  } catch (error) {
+    state.restaurants = [];
+    state.selectedRestaurantId = null;
+    renderRestaurantList();
+    renderRestaurantDetail();
+    setConnection('error', '连接失败');
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+}
+
+function openRestaurantDraft(candidate) {
+  state.draftCandidate = candidate.draft_restaurant ? null : candidate;
+  state.restaurantStatus = candidate.draft_restaurant?.status || 'draft';
+  state.selectedRestaurantId = candidate.draft_restaurant?.id || null;
+  document.querySelectorAll('[data-restaurant-status]').forEach(button => {
+    const selected = button.dataset.restaurantStatus === state.restaurantStatus;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  });
+  setMode('restaurants');
+  if (state.draftCandidate) {
+    renderRestaurantList();
+    renderRestaurantDetail();
+  }
+}
+
+function restaurantDraftPayload() {
+  const form = el('restaurantDraftForm');
+  if (!form.reportValidity()) return null;
+  const primaryCuisine = el('restaurantPrimaryCuisineInput').value;
+  const cuisineCodes = [...new Set([primaryCuisine, ...splitList(el('restaurantCuisineCodesInput').value)])];
+  const hours = [...el('restaurantHoursRows').querySelectorAll('[data-hours-row]')].map(row => ({
+    day_of_week: Number(row.querySelector('[data-hours-field="day_of_week"]').value),
+    opens_at: row.querySelector('[data-hours-field="opens_at"]').value,
+    closes_at: row.querySelector('[data-hours-field="closes_at"]').value
+  }));
+  const evidence = [...el('restaurantEvidenceRows').querySelectorAll('[data-evidence-row]')].map(row => {
+    const field = name => row.querySelector(`[data-evidence-field="${name}"]`).value;
+    return {
+      attribute: field('attribute'), title: field('title').trim(), value: field('value').trim(),
+      source_type: field('source_type'), source_label: field('source_label').trim(),
+      observed_at: new Date(field('observed_at')).toISOString(), expires_at: new Date(field('expires_at')).toISOString()
+    };
+  });
+  const minSpend = el('restaurantMinSpendInput').value;
+  return {
+    name: el('restaurantNameInput').value.trim(), address: el('restaurantAddressInput').value.trim(),
+    district: el('restaurantDistrictInput').value.trim(), cuisine_codes: cuisineCodes,
+    primary_cuisine_code: primaryCuisine,
+    price_min_fen: Math.round(Number(el('restaurantPriceMinInput').value) * 100),
+    price_max_fen: Math.round(Number(el('restaurantPriceMaxInput').value) * 100),
+    accepts_solo: el('restaurantAcceptsSoloInput').checked,
+    peak_policy: el('restaurantPeakPolicyInput').value.trim(), seat_types: splitList(el('restaurantSeatTypesInput').value),
+    counter_seats: Number(el('restaurantCounterSeatsInput').value), solo_portion: el('restaurantSoloPortionInput').checked,
+    min_spend_fen: minSpend === '' ? null : Math.round(Number(minSpend) * 100),
+    meal_minutes: { min: Number(el('restaurantMealMinInput').value), max: Number(el('restaurantMealMaxInput').value) },
+    noise_level: Number(el('restaurantNoiseInput').value), hours, dishes: splitList(el('restaurantDishesInput').value),
+    note: el('restaurantNoteInput').value.trim(), evidence
+  };
+}
+
+async function saveRestaurantDraft(event) {
+  event.preventDefault();
+  if (state.busy) return;
+  let payload;
+  try {
+    payload = restaurantDraftPayload();
+  } catch {
+    showToast('请检查证据时间');
+    return;
+  }
+  if (!payload) return;
+  const creating = Boolean(state.draftCandidate);
+  const record = currentRestaurant();
+  if (!creating && !record) return;
+  state.busy = true;
+  try {
+    const path = creating
+      ? `/api/v1/admin/poi/candidates/${encodeURIComponent(state.draftCandidate.id)}/draft`
+      : `/api/v1/admin/restaurants/${encodeURIComponent(record.id)}/draft`;
+    const response = await request(path, { method: creating ? 'POST' : 'PUT', body: JSON.stringify(payload) });
+    const id = response.restaurant.id;
+    state.draftCandidate = null;
+    state.restaurantStatus = 'draft';
+    state.selectedRestaurantId = id;
+    setRestaurantDirty(false);
+    showToast(creating ? '餐厅草稿已创建' : '餐厅草稿已保存');
+  } catch (error) {
+    showToast(error.message);
+    state.busy = false;
+    return;
+  }
+  state.busy = false;
+  await loadRestaurants({ preserveSelection: true, selectedId: state.selectedRestaurantId });
+}
+
+async function transitionRestaurant(action) {
+  const record = currentRestaurant();
+  if (!record || state.busy) return;
+  if (action === 'submit_review' && state.restaurantDirty) {
+    showToast('请先保存草稿更改');
+    return;
+  }
+  const note = el('restaurantTransitionNoteInput').value.trim();
+  if (note.length < 5) {
+    showToast('请填写至少 5 个字的操作说明');
+    el('restaurantTransitionNoteInput').focus();
+    return;
+  }
+  if (action === 'withdraw' && !window.confirm('确认撤回该餐厅？撤回后会立即退出公开搜索。')) return;
+  state.busy = true;
+  try {
+    const response = await request(`/api/v1/admin/restaurants/${encodeURIComponent(record.id)}/transitions`, {
+      method: 'POST', body: JSON.stringify({ action, note })
+    });
+    const updated = response.restaurant;
+    state.restaurantStatus = updated.status;
+    state.selectedRestaurantId = updated.id;
+    document.querySelectorAll('[data-restaurant-status]').forEach(button => {
+      const selected = button.dataset.restaurantStatus === state.restaurantStatus;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-selected', String(selected));
+    });
+    showToast(action === 'submit_review' ? '已提交审核' : action === 'request_changes' ? '已退回修改' : action === 'publish' ? '餐厅已发布' : '餐厅已撤回');
+  } catch (error) {
+    showToast(error.message);
+    state.busy = false;
+    return;
+  }
+  state.busy = false;
+  await loadRestaurants({ preserveSelection: true, selectedId: state.selectedRestaurantId });
+}
+
 async function reviewPoiCandidate(decision) {
   const candidate = currentPoiCandidate();
   if (!candidate || state.busy) return;
+  if (decision === 'create_draft' || decision === 'open_draft') {
+    openRestaurantDraft(candidate);
+    return;
+  }
   const resolution = el('poiResolutionInput').value.trim();
   const restaurantId = el('poiRestaurantInput').value.trim();
   if (resolution.length < 5) {
@@ -454,10 +780,11 @@ async function updateCoverageQuality(event) {
 }
 
 function setMode(mode) {
-  if (mode !== 'tasks' && mode !== 'poi') return;
+  if (mode !== 'tasks' && mode !== 'poi' && mode !== 'restaurants') return;
   state.mode = mode;
   el('taskWorkspace').classList.toggle('hidden', mode !== 'tasks');
   el('poiWorkspace').classList.toggle('hidden', mode !== 'poi');
+  el('restaurantWorkspace').classList.toggle('hidden', mode !== 'restaurants');
   if (mode !== 'poi') {
     el('poiImportBand').classList.add('hidden');
     el('qualityBand').classList.add('hidden');
@@ -469,7 +796,8 @@ function setMode(mode) {
   });
   if (!state.token) return;
   if (mode === 'tasks') loadTasks();
-  else loadPoiCandidates();
+  else if (mode === 'poi') loadPoiCandidates();
+  else loadRestaurants({ preserveSelection: true });
 }
 
 function bindEvents() {
@@ -493,7 +821,8 @@ function bindEvents() {
     state.token = el('tokenInput').value;
     el('tokenInput').value = '';
     if (state.mode === 'tasks') loadTasks();
-    else loadPoiCandidates();
+    else if (state.mode === 'poi') loadPoiCandidates();
+    else loadRestaurants({ preserveSelection: true });
   });
   el('modeNav').addEventListener('click', event => {
     const button = event.target.closest('[data-mode]');
@@ -576,6 +905,64 @@ function bindEvents() {
     if (button) reviewPoiCandidate(button.dataset.poiAction);
   });
   el('poiResolutionInput').addEventListener('input', event => { el('poiResolutionCount').textContent = event.target.value.length; });
+  el('refreshRestaurantButton').addEventListener('click', () => loadRestaurants({ preserveSelection: true }));
+  el('restaurantStatusTabs').addEventListener('click', event => {
+    const button = event.target.closest('[data-restaurant-status]');
+    if (!button || button.dataset.restaurantStatus === state.restaurantStatus) return;
+    state.restaurantStatus = button.dataset.restaurantStatus;
+    state.draftCandidate = null;
+    document.querySelectorAll('[data-restaurant-status]').forEach(item => {
+      const selected = item === button;
+      item.classList.toggle('active', selected);
+      item.setAttribute('aria-selected', String(selected));
+    });
+    state.selectedRestaurantId = null;
+    loadRestaurants();
+  });
+  el('restaurantList').addEventListener('click', event => {
+    const button = event.target.closest('[data-restaurant-id]');
+    if (!button) return;
+    state.draftCandidate = null;
+    state.selectedRestaurantId = button.dataset.restaurantId;
+    renderRestaurantList();
+    renderRestaurantDetail();
+  });
+  el('restaurantDraftForm').addEventListener('submit', saveRestaurantDraft);
+  el('restaurantDraftForm').addEventListener('input', () => {
+    const record = currentRestaurant();
+    if (state.draftCandidate || record?.status === 'draft') setRestaurantDirty(true);
+  });
+  el('addHoursButton').addEventListener('click', () => {
+    el('restaurantHoursRows').insertAdjacentHTML('beforeend', hoursRow());
+    setRestaurantDirty(true);
+  });
+  el('addEvidenceButton').addEventListener('click', () => {
+    el('restaurantEvidenceRows').insertAdjacentHTML('beforeend', evidenceRow());
+    setRestaurantDirty(true);
+  });
+  el('restaurantHoursRows').addEventListener('click', event => {
+    const button = event.target.closest('[data-remove-hours]');
+    if (!button) return;
+    const rows = el('restaurantHoursRows').querySelectorAll('[data-hours-row]');
+    if (rows.length === 1) return showToast('至少保留一个营业时段');
+    button.closest('[data-hours-row]').remove();
+    setRestaurantDirty(true);
+  });
+  el('restaurantEvidenceRows').addEventListener('click', event => {
+    const button = event.target.closest('[data-remove-evidence]');
+    if (!button) return;
+    const rows = el('restaurantEvidenceRows').querySelectorAll('[data-evidence-row]');
+    if (rows.length === 1) return showToast('至少保留一条核验证据');
+    button.closest('[data-evidence-row]').remove();
+    setRestaurantDirty(true);
+  });
+  el('restaurantTransitionNoteInput').addEventListener('input', event => {
+    el('restaurantTransitionNoteCount').textContent = event.target.value.length;
+  });
+  el('restaurantReviewActions').addEventListener('click', event => {
+    const button = event.target.closest('[data-restaurant-action]');
+    if (button) transitionRestaurant(button.dataset.restaurantAction);
+  });
 }
 
 function initialize() {
