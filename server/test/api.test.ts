@@ -228,7 +228,7 @@ test('feedback creates one review task and replays idempotently', async () => {
     const invalidTransition = await app.inject({
       method: 'PATCH',
       url: `/api/v1/admin/tasks/${task.id}`,
-      headers: { authorization },
+      headers: { authorization, 'x-operator-id': 'operator.test' },
       payload: { status: 'open' }
     });
     assert.equal(invalidTransition.statusCode, 409);
@@ -296,6 +296,216 @@ test('evidence sweep is protected, idempotent and creates one task per restauran
     const tasks = await app.inject({ method: 'GET', url: '/api/v1/admin/tasks?status=open', headers: { authorization } });
     assert.equal(tasks.json().tasks.length, 6);
     assert.ok(tasks.json().tasks.every((task: { reason: string }) => task.reason === 'evidence_expired'));
+  } finally {
+    await app.close();
+  }
+});
+
+test('POI import requires operator authorization and source authorization metadata', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  const payload = {
+    coverage_area_id: 'sh-jingan-huangpu',
+    provider: 'licensed_map',
+    source_label: '地图合作方导出 2026-07-20',
+    authorization_basis: '测试环境授权数据，仅用于候选去重契约验证',
+    idempotency_key: '4a73a91b-d280-46cb-8937-b299fa0dfe51',
+    candidates: [{
+      provider_poi_id: 'auth-check-001', name: '授权检查', address: '测试路 1 号', district: '静安寺',
+      location: { lat: 31.2231, lng: 121.4452, coord_type: 'gcj02' },
+      observed_at: '2026-07-20T04:00:00.000Z'
+    }]
+  };
+  try {
+    const unauthorized = await app.inject({ method: 'POST', url: '/api/v1/admin/poi/imports', payload });
+    assert.equal(unauthorized.statusCode, 401);
+    const missingOperator = await app.inject({
+      method: 'POST', url: '/api/v1/admin/poi/imports',
+      headers: { authorization: `Bearer ${config.adminApiToken}` }, payload
+    });
+    assert.equal(missingOperator.statusCode, 400);
+    const invalid = await app.inject({
+      method: 'POST', url: '/api/v1/admin/poi/imports',
+      headers: { authorization: `Bearer ${config.adminApiToken}`, 'x-operator-id': 'operator.poi' },
+      payload: { ...payload, authorization_basis: '' }
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(invalid.json().error.code, 'INVALID_REQUEST');
+  } finally {
+    await app.close();
+  }
+});
+
+test('authorized POI imports remain candidates until an operator resolves deduplication', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  const authorization = `Bearer ${config.adminApiToken}`;
+  const headers = { authorization, 'x-operator-id': 'operator.poi' };
+  const payload = {
+    coverage_area_id: 'sh-jingan-huangpu',
+    provider: 'licensed_map',
+    source_label: '地图合作方导出 2026-07-20',
+    authorization_basis: '测试环境授权数据，仅用于候选去重契约验证',
+    idempotency_key: '91e9bc53-c812-43f6-a17d-595609d46f02',
+    candidates: [
+      {
+        provider_poi_id: 'map-poi-001',
+        name: '杉木面所',
+        address: '华山路 388 号 B1 层',
+        district: '静安寺',
+        location: { lat: 31.2231, lng: 121.4452, coord_type: 'gcj02' },
+        phone: '021-5555-0101',
+        raw_category: '面馆',
+        observed_at: '2026-07-20T04:00:00.000Z'
+      },
+      {
+        provider_poi_id: 'map-poi-002',
+        name: '待核验新分店',
+        address: '测试路 18 号',
+        district: '静安寺',
+        location: { lat: 31.218, lng: 121.438, coord_type: 'gcj02' },
+        raw_category: '简餐',
+        observed_at: '2026-07-20T04:00:00.000Z'
+      }
+    ]
+  };
+  try {
+    const created = await app.inject({ method: 'POST', url: '/api/v1/admin/poi/imports', headers, payload });
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().batch.input_count, 2);
+    assert.equal(created.json().batch.created_count, 2);
+    assert.equal(created.json().batch.exact_match_count, 0);
+    assert.equal(created.json().idempotent_replay, false);
+
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/admin/poi/imports', headers, payload });
+    assert.equal(replay.statusCode, 200);
+    assert.equal(replay.json().batch.id, created.json().batch.id);
+    assert.equal(replay.json().idempotent_replay, true);
+
+    const conflict = await app.inject({
+      method: 'POST', url: '/api/v1/admin/poi/imports', headers,
+      payload: { ...payload, source_label: '不同导入内容' }
+    });
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.json().error.code, 'POI_IDEMPOTENCY_KEY_REUSED');
+
+    const pending = await app.inject({
+      method: 'GET', url: '/api/v1/admin/poi/candidates?status=pending&coverage_area_id=sh-jingan-huangpu', headers
+    });
+    assert.equal(pending.statusCode, 200);
+    assert.equal(pending.json().candidates.length, 2);
+    const duplicate = pending.json().candidates.find((item: { provider_poi_id: string }) => item.provider_poi_id === 'map-poi-001');
+    const newBranch = pending.json().candidates.find((item: { provider_poi_id: string }) => item.provider_poi_id === 'map-poi-002');
+    assert.equal(duplicate.suggested_restaurant.legacy_id, 'r001');
+    assert.equal(duplicate.match_method, 'name_address_distance');
+    assert.equal(duplicate.location.source.coord_type, 'gcj02');
+    assert.notEqual(duplicate.location.source.lng, duplicate.location.wgs84.lng);
+
+    const matched = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/poi/candidates/${duplicate.id}`, headers,
+      payload: { decision: 'match_existing', restaurant_id: 'r001', resolution_note: 'Provider ID、名称、地址与坐标一致' }
+    });
+    assert.equal(matched.statusCode, 200);
+    assert.equal(matched.json().candidate.status, 'matched');
+    assert.equal(matched.json().candidate.matched_restaurant.legacy_id, 'r001');
+
+    const acceptedNewBranch = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/poi/candidates/${newBranch.id}`, headers,
+      payload: { decision: 'new_branch', resolution_note: '未发现重复分店，进入字段核验阶段' }
+    });
+    assert.equal(acceptedNewBranch.statusCode, 200);
+    assert.equal(acceptedNewBranch.json().candidate.status, 'new_branch');
+
+    const providerSlotConflict = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/poi/candidates/${newBranch.id}`, headers,
+      payload: { decision: 'match_existing', restaurant_id: 'r001', resolution_note: '同一 Provider 的分店映射冲突' }
+    });
+    assert.equal(providerSlotConflict.statusCode, 409);
+    assert.equal(providerSlotConflict.json().error.code, 'PROVIDER_REF_CONFLICT');
+
+    const invalidTransition = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/poi/candidates/${duplicate.id}`, headers,
+      payload: { decision: 'reject', resolution_note: '不能覆盖已确认的 Provider 映射' }
+    });
+    assert.equal(invalidTransition.statusCode, 409);
+    assert.equal(invalidTransition.json().error.code, 'INVALID_POI_CANDIDATE_TRANSITION');
+
+    const exactReplay = await app.inject({
+      method: 'POST', url: '/api/v1/admin/poi/imports', headers,
+      payload: {
+        ...payload,
+        idempotency_key: '0ba94990-8bdf-4657-9043-fbf6a402e947',
+        candidates: [payload.candidates[0]]
+      }
+    });
+    assert.equal(exactReplay.statusCode, 201);
+    assert.equal(exactReplay.json().batch.updated_count, 1);
+    assert.equal(exactReplay.json().batch.exact_match_count, 1);
+
+    const search = await app.inject({ method: 'POST', url: '/api/v1/restaurants/search', payload: searchPayload() });
+    assert.equal(search.statusCode, 200);
+    assert.equal(search.json().results.length, 5);
+    assert.equal(search.json().results.some((item: { name: string }) => item.name === '待核验新分店'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('coverage quality report blocks fixture and missing manual evidence from promotion', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  const headers = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.quality'
+  };
+  try {
+    const response = await app.inject({
+      method: 'GET', url: '/api/v1/admin/coverage/sh-jingan-huangpu/quality', headers
+    });
+    assert.equal(response.statusCode, 200);
+    const quality = response.json().quality;
+    assert.equal(quality.area.status, 'beta');
+    assert.equal(quality.metrics.published_restaurants, 6);
+    assert.equal(quality.metrics.provider_reference_rate, 0);
+    assert.equal(quality.metrics.search_sample_coverage_rate, null);
+    assert.equal(quality.gates.beta.policyVersion, 'coverage-beta-v1');
+    assert.equal(quality.gates.beta.eligible, false);
+    assert.equal(quality.gates.live.eligible, false);
+    assert.ok(quality.gates.beta.checks.some((check: { code: string; passed: boolean }) => check.code === 'provider_terms' && !check.passed));
+
+    const updated = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/coverage/sh-jingan-huangpu/quality', headers,
+      payload: {
+        search_sample_coverage_rate: 0.8,
+        branch_mismatch_rate: 0.01,
+        visit_conformity_rate: 0.75,
+        incident_free_weeks: 2,
+        provider_terms_reviewed: true,
+        privacy_reviewed: true,
+        postgis_rehearsal_passed: true,
+        evidence_note: '测试样本、评审记录和演练记录均已归档'
+      }
+    });
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.json().quality.metrics.search_sample_coverage_rate, 0.8);
+    assert.equal(updated.json().quality.metrics.provider_terms_reviewed, true);
+    assert.equal(updated.json().quality.gates.beta.eligible, false);
+
+    const invalidUpdate = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/coverage/sh-jingan-huangpu/quality', headers,
+      payload: { evidence_note: '只有说明但没有指标' }
+    });
+    assert.equal(invalidUpdate.statusCode, 400);
+
+    const upcoming = await app.inject({
+      method: 'GET', url: '/api/v1/admin/coverage/sh-xujiahui/quality', headers
+    });
+    assert.equal(upcoming.statusCode, 200);
+    assert.equal(upcoming.json().quality.area.status, 'upcoming');
+    assert.equal(upcoming.json().quality.metrics.published_restaurants, 0);
+
+    const cities = await app.inject({ method: 'GET', url: '/api/v1/cities' });
+    const xujiahui = cities.json().cities
+      .find((city: { code: string }) => city.code === 'shanghai').areas
+      .find((area: { id: string }) => area.id === 'sh-xujiahui');
+    assert.equal(xujiahui.status, 'upcoming');
   } finally {
     await app.close();
   }

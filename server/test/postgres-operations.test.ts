@@ -10,8 +10,10 @@ function createPool(options: { failAudit?: boolean; replay?: boolean } = {}) {
     async query<T extends QueryResultRow>(sql: string): Promise<QueryResult<T>> {
       const normalized = sql.replace(/\s+/g, ' ').trim();
       calls.push(normalized);
-      if (normalized.includes('SELECT id, city_id FROM restaurants')) {
-        return { rows: [{ id: '10000000-0000-4000-8000-000000000001', city_id: 'city-1' }] } as unknown as QueryResult<T>;
+      if (normalized.includes('SELECT r.id, r.city_id, c.timezone FROM restaurants')) {
+        return { rows: [{
+          id: '10000000-0000-4000-8000-000000000001', city_id: 'city-1', timezone: 'Asia/Shanghai'
+        }] } as unknown as QueryResult<T>;
       }
       if (normalized.includes('FROM feedback_reports f WHERE f.idempotency_key')) {
         return { rows: options.replay ? [{

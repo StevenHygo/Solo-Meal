@@ -11,6 +11,8 @@ import { rankRestaurant } from './services/ranking.js';
 import { searchRequestSchema, searchRestaurants } from './services/search.js';
 import { feedbackPriority, feedbackRequestSchema } from './services/feedback.js';
 import { curationTaskParamsSchema, curationTaskQuerySchema, curationTaskUpdateSchema, toCurationTaskDto } from './services/curation.js';
+import { poiCandidateParamsSchema, poiCandidateQuerySchema, poiCandidateReviewSchema, poiImportRequestSchema, preparePoiImport, toPoiCandidateDto } from './services/poi.js';
+import { coverageQualityUpdateSchema, toCoverageQualityDto } from './services/coverage-quality.js';
 
 interface AppOptions {
   config: AppConfig;
@@ -20,6 +22,7 @@ interface AppOptions {
 
 const suggestionQuerySchema = z.object({ q: z.string().trim().max(80).default(''), limit: z.coerce.number().int().min(1).max(20).default(8) });
 const restaurantParamsSchema = z.object({ id: z.string().min(1).max(80) });
+const coverageParamsSchema = z.object({ id: z.string().min(1).max(80) });
 const operatorIdSchema = z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9._@-]+$/);
 
 function tokensMatch(actual: string, expected: string): boolean {
@@ -52,6 +55,15 @@ export async function createApp({ config, repository, clock = () => new Date() }
       return;
     }
     const normalizedError = error instanceof Error ? error : new Error('Unknown API error');
+    const frameworkStatus = (normalizedError as Error & { statusCode?: number }).statusCode;
+    if (frameworkStatus === 429) {
+      void reply.status(429).send({ error: { code: 'RATE_LIMITED', message: '请求过于频繁，请稍后重试' }, request_id: request.id });
+      return;
+    }
+    if (frameworkStatus === 413) {
+      void reply.status(413).send({ error: { code: 'PAYLOAD_TOO_LARGE', message: '请求内容超过接口限制' }, request_id: request.id });
+      return;
+    }
     const known: Record<string, { status: number; message: string }> = {
       INVALID_CURSOR: { status: 400, message: '分页游标无效或已经过期' },
       COVERAGE_AREA_NOT_FOUND: { status: 404, message: '覆盖区域不存在' },
@@ -62,7 +74,13 @@ export async function createApp({ config, repository, clock = () => new Date() }
       CURATION_TASK_NOT_FOUND: { status: 404, message: '复核任务不存在' },
       INVALID_TASK_TRANSITION: { status: 409, message: '复核任务状态不能这样变更' },
       TASK_ALREADY_CLAIMED: { status: 409, message: '复核任务已由其他运营人员认领' },
-      RESOLUTION_REQUIRED: { status: 400, message: '结束任务前必须填写处理说明' }
+      RESOLUTION_REQUIRED: { status: 400, message: '结束任务前必须填写处理说明' },
+      POI_IDEMPOTENCY_KEY_REUSED: { status: 409, message: '幂等键已经用于其他 POI 导入内容' },
+      POI_COVERAGE_MISMATCH: { status: 409, message: '同一 Provider POI 已归入其他覆盖区域' },
+      POI_CANDIDATE_NOT_FOUND: { status: 404, message: 'POI 候选不存在' },
+      INVALID_POI_CANDIDATE_TRANSITION: { status: 409, message: 'POI 候选状态不能这样变更' },
+      POI_RESTAURANT_COVERAGE_MISMATCH: { status: 409, message: '候选与目标餐厅不在同一覆盖区域' },
+      PROVIDER_REF_CONFLICT: { status: 409, message: 'Provider POI 已关联其他餐厅' }
     };
     const match = known[normalizedError.message];
     if (match) {
@@ -158,7 +176,7 @@ export async function createApp({ config, repository, clock = () => new Date() }
   app.patch('/api/v1/admin/tasks/:id', { preHandler: requireAdmin }, async request => {
     const { id } = curationTaskParamsSchema.parse(request.params);
     const input = curationTaskUpdateSchema.parse(request.body);
-    const actorId = operatorIdSchema.parse(request.headers['x-operator-id'] ?? 'operator');
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
     const assignee = input.assignee === undefined && input.status === 'in_progress' ? actorId : input.assignee;
     const task = await repository.updateCurationTask(id, {
       status: input.status,
@@ -172,7 +190,7 @@ export async function createApp({ config, repository, clock = () => new Date() }
   });
 
   app.post('/api/v1/admin/evidence/sweep', { preHandler: requireAdmin }, async request => {
-    const actorId = operatorIdSchema.parse(request.headers['x-operator-id'] ?? 'operator');
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
     const result = await repository.sweepExpiredEvidence(clock(), actorId);
     return {
       request_id: request.id,
@@ -182,6 +200,76 @@ export async function createApp({ config, repository, clock = () => new Date() }
         processed_at: result.processedAt
       }
     };
+  });
+
+  app.post('/api/v1/admin/poi/imports', {
+    preHandler: requireAdmin,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const input = poiImportRequestSchema.parse(request.body);
+    const receipt = await repository.importPoiCandidates(preparePoiImport(input, actorId, clock()));
+    return reply.status(receipt.created ? 201 : 200).send({
+      request_id: request.id,
+      batch: {
+        id: receipt.batchId,
+        input_count: receipt.inputCount,
+        created_count: receipt.createdCount,
+        updated_count: receipt.updatedCount,
+        exact_match_count: receipt.exactMatchCount,
+        imported_at: receipt.importedAt
+      },
+      idempotent_replay: !receipt.created
+    });
+  });
+
+  app.get('/api/v1/admin/poi/candidates', { preHandler: requireAdmin }, async request => {
+    const query = poiCandidateQuerySchema.parse(request.query);
+    const candidates = await repository.listPoiCandidates({
+      status: query.status ?? null,
+      coverageAreaId: query.coverage_area_id ?? null,
+      limit: query.limit
+    });
+    return { request_id: request.id, candidates: candidates.map(toPoiCandidateDto) };
+  });
+
+  app.patch('/api/v1/admin/poi/candidates/:id', { preHandler: requireAdmin }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = poiCandidateParamsSchema.parse(request.params);
+    const input = poiCandidateReviewSchema.parse(request.body);
+    const candidate = await repository.reviewPoiCandidate(id, {
+      decision: input.decision,
+      ...(input.restaurant_id ? { restaurantId: input.restaurant_id } : {}),
+      resolutionNote: input.resolution_note,
+      actorId,
+      reviewedAt: clock()
+    });
+    return { request_id: request.id, candidate: toPoiCandidateDto(candidate) };
+  });
+
+  app.get('/api/v1/admin/coverage/:id/quality', { preHandler: requireAdmin }, async request => {
+    const { id } = coverageParamsSchema.parse(request.params);
+    const quality = await repository.getCoverageQuality(id, clock());
+    return { request_id: request.id, quality: toCoverageQualityDto(quality) };
+  });
+
+  app.patch('/api/v1/admin/coverage/:id/quality', { preHandler: requireAdmin }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = coverageParamsSchema.parse(request.params);
+    const input = coverageQualityUpdateSchema.parse(request.body);
+    const quality = await repository.updateCoverageQuality(id, {
+      ...(input.search_sample_coverage_rate !== undefined ? { searchSampleCoverageRate: input.search_sample_coverage_rate } : {}),
+      ...(input.branch_mismatch_rate !== undefined ? { branchMismatchRate: input.branch_mismatch_rate } : {}),
+      ...(input.visit_conformity_rate !== undefined ? { visitConformityRate: input.visit_conformity_rate } : {}),
+      ...(input.incident_free_weeks !== undefined ? { incidentFreeWeeks: input.incident_free_weeks } : {}),
+      ...(input.provider_terms_reviewed !== undefined ? { providerTermsReviewed: input.provider_terms_reviewed } : {}),
+      ...(input.privacy_reviewed !== undefined ? { privacyReviewed: input.privacy_reviewed } : {}),
+      ...(input.postgis_rehearsal_passed !== undefined ? { postgisRehearsalPassed: input.postgis_rehearsal_passed } : {}),
+      evidenceNote: input.evidence_note,
+      actorId,
+      updatedAt: clock()
+    });
+    return { request_id: request.id, quality: toCoverageQualityDto(quality) };
   });
 
   app.addHook('onClose', async () => repository.close());

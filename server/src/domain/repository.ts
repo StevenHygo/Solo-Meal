@@ -1,5 +1,7 @@
 import type { City, Coordinate, CoverageArea, EvidenceFixture, HoursInterval, LocationSuggestion } from './types.js';
 import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, EvidenceSweepResult, FeedbackReceipt, FeedbackSubmission } from './operations.js';
+import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiImportReceipt, PoiImportSubmission } from './poi.js';
+import type { CoverageQualityManualUpdate, CoverageQualityRecord } from './coverage-quality.js';
 
 export interface RestaurantHours extends HoursInterval {
   dayOfWeek: number | null;
@@ -74,5 +76,10 @@ export interface RestaurantRepository {
   listCurationTasks(status: CurationTaskStatus | null, limit: number): Promise<CurationTaskRecord[]>;
   updateCurationTask(id: string, update: CurationTaskUpdate): Promise<CurationTaskRecord>;
   sweepExpiredEvidence(at: Date, actorId: string): Promise<EvidenceSweepResult>;
+  importPoiCandidates(input: PoiImportSubmission): Promise<PoiImportReceipt>;
+  listPoiCandidates(query: PoiCandidateQuery): Promise<PoiCandidateRecord[]>;
+  reviewPoiCandidate(id: string, review: PoiCandidateReview): Promise<PoiCandidateRecord>;
+  getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord>;
+  updateCoverageQuality(areaId: string, update: CoverageQualityManualUpdate): Promise<CoverageQualityRecord>;
   close(): Promise<void>;
 }

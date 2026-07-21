@@ -1,8 +1,11 @@
 import type { CandidateQuery, RestaurantRecord, RestaurantRepository, RepositoryHealth } from '../domain/repository.js';
 import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, EvidenceSweepResult, FeedbackReceipt, FeedbackSubmission } from '../domain/operations.js';
+import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiCandidateStatus, PoiImportReceipt, PoiImportSubmission } from '../domain/poi.js';
+import type { CoverageQualityManualUpdate, CoverageQualityRecord } from '../domain/coverage-quality.js';
 import type { City, CoverageArea, LocationSuggestion } from '../domain/types.js';
 import { withTransaction, type DatabasePool } from '../db/pool.js';
-import { assertTaskClaim, assertTaskTransition } from '../services/curation.js';
+import { addBusinessDays, assertTaskClaim, assertTaskTransition } from '../services/curation.js';
+import { assertPoiCandidateTransition } from '../services/poi.js';
 
 interface RestaurantRow {
   id: string;
@@ -67,6 +70,40 @@ interface CurationTaskRow {
   updated_at: string;
 }
 
+interface PoiCandidateRow {
+  id: string;
+  provider: string;
+  provider_poi_id: string;
+  city_code: string;
+  coverage_area_id: string;
+  coverage_area_name: string;
+  name: string;
+  address: string;
+  district: string;
+  source_coord_type: PoiCandidateRecord['sourceCoordType'];
+  source_lat: number;
+  source_lng: number;
+  wgs84_lat: number;
+  wgs84_lng: number;
+  phone_normalized: string | null;
+  raw_category: string | null;
+  observed_at: string;
+  status: PoiCandidateStatus;
+  matched_restaurant_id: string | null;
+  matched_restaurant_legacy_id: string | null;
+  matched_restaurant_name: string | null;
+  suggested_restaurant_id: string | null;
+  suggested_restaurant_legacy_id: string | null;
+  suggested_restaurant_name: string | null;
+  suggestion_score: number | null;
+  match_method: PoiCandidateRecord['matchMethod'];
+  resolution_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
 function mapCurationTask(row: CurationTaskRow): CurationTaskRecord {
   return {
     id: row.id,
@@ -99,6 +136,68 @@ const curationTaskSelect = `
   LEFT JOIN restaurants r ON r.id = t.restaurant_id
   LEFT JOIN feedback_reports f ON f.id = t.feedback_report_id
 `;
+
+const poiCandidateSelect = `
+  SELECT pc.id, pc.provider, pc.provider_poi_id, c.code AS city_code,
+    pc.coverage_area_id, ca.name AS coverage_area_name, pc.name, pc.address, pc.district,
+    pc.source_coord_type, pc.source_lat, pc.source_lng,
+    ST_Y(pc.location_wgs84::geometry) AS wgs84_lat,
+    ST_X(pc.location_wgs84::geometry) AS wgs84_lng,
+    pc.phone_normalized, pc.raw_category, pc.observed_at::text, pc.status,
+    pc.matched_restaurant_id, matched.legacy_id AS matched_restaurant_legacy_id,
+    matched.name AS matched_restaurant_name,
+    pc.suggested_restaurant_id, suggested.legacy_id AS suggested_restaurant_legacy_id,
+    suggested.name AS suggested_restaurant_name, pc.suggestion_score,
+    pc.match_method, pc.resolution_note, pc.reviewed_by, pc.reviewed_at::text,
+    pc.first_seen_at::text, pc.last_seen_at::text
+  FROM poi_candidates pc
+  JOIN coverage_areas ca ON ca.id = pc.coverage_area_id
+  JOIN cities c ON c.id = ca.city_id
+  LEFT JOIN restaurants matched ON matched.id = pc.matched_restaurant_id
+  LEFT JOIN restaurants suggested ON suggested.id = pc.suggested_restaurant_id
+`;
+
+function mapPoiCandidate(row: PoiCandidateRow): PoiCandidateRecord {
+  return {
+    id: row.id,
+    provider: row.provider,
+    providerPoiId: row.provider_poi_id,
+    cityCode: row.city_code,
+    coverageAreaId: row.coverage_area_id,
+    coverageAreaName: row.coverage_area_name,
+    name: row.name,
+    address: row.address,
+    district: row.district,
+    sourceCoordType: row.source_coord_type,
+    sourceLocation: { lat: Number(row.source_lat), lng: Number(row.source_lng) },
+    locationWgs84: { lat: Number(row.wgs84_lat), lng: Number(row.wgs84_lng) },
+    phoneNormalized: row.phone_normalized,
+    rawCategory: row.raw_category,
+    observedAt: row.observed_at,
+    status: row.status,
+    matchedRestaurantId: row.matched_restaurant_id,
+    matchedRestaurantLegacyId: row.matched_restaurant_legacy_id,
+    matchedRestaurantName: row.matched_restaurant_name,
+    suggestedRestaurantId: row.suggested_restaurant_id,
+    suggestedRestaurantLegacyId: row.suggested_restaurant_legacy_id,
+    suggestedRestaurantName: row.suggested_restaurant_name,
+    suggestionScore: row.suggestion_score === null ? null : Number(row.suggestion_score),
+    matchMethod: row.match_method,
+    resolutionNote: row.resolution_note,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at
+  };
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function optionalBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
 
 function mapRestaurant(row: RestaurantRow): RestaurantRecord {
   return {
@@ -279,9 +378,10 @@ export class PostgresRepository implements RestaurantRepository {
 
   async createFeedbackReport(input: FeedbackSubmission): Promise<FeedbackReceipt> {
     return withTransaction(this.pool, async client => {
-      const restaurantResult = await client.query<{ id: string; city_id: string }>(`
-        SELECT id, city_id FROM restaurants
-        WHERE publish_status = 'published' AND (id::text = $1 OR legacy_id = $1) LIMIT 1
+      const restaurantResult = await client.query<{ id: string; city_id: string; timezone: string }>(`
+        SELECT r.id, r.city_id, c.timezone FROM restaurants r
+        JOIN cities c ON c.id = r.city_id
+        WHERE r.publish_status = 'published' AND (r.id::text = $1 OR r.legacy_id = $1) LIMIT 1
       `, [input.restaurantId]);
       const restaurant = restaurantResult.rows[0];
       if (!restaurant) throw new Error('RESTAURANT_NOT_FOUND');
@@ -317,7 +417,7 @@ export class PostgresRepository implements RestaurantRepository {
         ) VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $7)
         RETURNING id
       `, [restaurant.city_id, restaurant.id, report.id, `feedback:${input.reportType}`, input.priority,
-        new Date(input.submittedAt.getTime() + 5 * 86400000), input.submittedAt]);
+        addBusinessDays(input.submittedAt, 5, restaurant.timezone), input.submittedAt]);
       const task = taskResult.rows[0];
       if (!task) throw new Error('CURATION_TASK_INSERT_FAILED');
 
@@ -432,6 +532,343 @@ export class PostgresRepository implements RestaurantRepository {
       }
       return { expiredEvidence: counts.expired_count, createdTasks: counts.created_count, processedAt: at.toISOString() };
     });
+  }
+
+  async importPoiCandidates(input: PoiImportSubmission): Promise<PoiImportReceipt> {
+    return withTransaction(this.pool, async client => {
+      const coverageResult = await client.query<{ id: string }>('SELECT id FROM coverage_areas WHERE id = $1', [input.coverageAreaId]);
+      if (!coverageResult.rows[0]) throw new Error('COVERAGE_AREA_NOT_FOUND');
+
+      const batchResult = await client.query<{ id: string; imported_at: string }>(`
+        INSERT INTO poi_import_batches (
+          coverage_area_id, provider, source_label, authorization_basis, idempotency_key,
+          payload_sha256, input_count, imported_by, imported_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING id, imported_at::text
+      `, [input.coverageAreaId, input.provider, input.sourceLabel, input.authorizationBasis,
+        input.idempotencyKey, input.payloadSha256, input.candidates.length, input.actorId, input.importedAt]);
+      const batch = batchResult.rows[0];
+      if (!batch) {
+        const replayResult = await client.query<{
+          id: string; payload_sha256: string; input_count: number; created_count: number;
+          updated_count: number; exact_match_count: number; imported_at: string;
+        }>(`
+          SELECT id, payload_sha256, input_count, created_count, updated_count,
+            exact_match_count, imported_at::text
+          FROM poi_import_batches WHERE idempotency_key = $1
+        `, [input.idempotencyKey]);
+        const replay = replayResult.rows[0];
+        if (!replay) throw new Error('POI_IMPORT_INSERT_FAILED');
+        if (replay.payload_sha256 !== input.payloadSha256) throw new Error('POI_IDEMPOTENCY_KEY_REUSED');
+        return {
+          batchId: replay.id,
+          inputCount: replay.input_count,
+          createdCount: replay.created_count,
+          updatedCount: replay.updated_count,
+          exactMatchCount: replay.exact_match_count,
+          created: false,
+          importedAt: replay.imported_at
+        };
+      }
+
+      let createdCount = 0;
+      let updatedCount = 0;
+      let exactMatchCount = 0;
+      for (const candidate of input.candidates) {
+        const exactResult = await client.query<{ id: string; coverage_area_id: string }>(`
+          SELECT r.id, r.coverage_area_id
+          FROM restaurant_provider_refs pr
+          JOIN restaurants r ON r.id = pr.restaurant_id
+          WHERE pr.provider = $1 AND pr.provider_poi_id = $2
+        `, [input.provider, candidate.providerPoiId]);
+        const exact = exactResult.rows[0] ?? null;
+        if (exact && exact.coverage_area_id !== input.coverageAreaId) throw new Error('POI_COVERAGE_MISMATCH');
+
+        const suggestionResult = exact ? { rows: [] as Array<{ id: string; score: number }> } : await client.query<{ id: string; score: number }>(`
+          SELECT ranked.id, ranked.score FROM (
+            SELECT r.id,
+              greatest(similarity(lower(r.name), lower($2)), word_similarity(lower($2), lower(r.name))) * 0.75
+              + similarity(lower(r.address), lower($3)) * 0.15
+              + greatest(0, 1 - ST_Distance(r.location_wgs84, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography) / 200) * 0.10 AS score
+            FROM restaurants r
+            WHERE r.coverage_area_id = $1 AND r.publish_status <> 'withdrawn'
+              AND ST_DWithin(r.location_wgs84, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography, 200)
+              AND (similarity(lower(r.name), lower($2)) >= 0.25 OR similarity(lower(r.address), lower($3)) >= 0.25)
+          ) ranked
+          WHERE ranked.score >= 0.40
+          ORDER BY ranked.score DESC, ranked.id LIMIT 1
+        `, [input.coverageAreaId, candidate.name, candidate.address,
+          candidate.locationWgs84.lng, candidate.locationWgs84.lat]);
+        const suggestion = suggestionResult.rows[0] ?? null;
+        const gcj02 = candidate.sourceCoordType === 'gcj02' ? candidate.sourceLocation : null;
+
+        const insertResult = await client.query<{ id: string }>(`
+          INSERT INTO poi_candidates (
+            provider, provider_poi_id, coverage_area_id, last_batch_id, name, address, district,
+            source_coord_type, source_lat, source_lng, gcj02_lat, gcj02_lng, location_wgs84,
+            phone_normalized, raw_category, observed_at, status, matched_restaurant_id,
+            suggested_restaurant_id, suggestion_score, match_method, first_seen_at, last_seen_at
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12, ST_SetSRID(ST_MakePoint($13, $14), 4326)::geography,
+            $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $23
+          ) ON CONFLICT (provider, provider_poi_id) DO NOTHING
+          RETURNING id
+        `, [input.provider, candidate.providerPoiId, input.coverageAreaId, batch.id,
+          candidate.name, candidate.address, candidate.district, candidate.sourceCoordType,
+          candidate.sourceLocation.lat, candidate.sourceLocation.lng, gcj02?.lat ?? null, gcj02?.lng ?? null,
+          candidate.locationWgs84.lng, candidate.locationWgs84.lat, candidate.phoneNormalized,
+          candidate.rawCategory, candidate.observedAt, exact ? 'matched' : 'pending', exact?.id ?? null,
+          exact?.id ?? suggestion?.id ?? null, exact ? 1 : suggestion?.score ?? null,
+          exact ? 'provider_ref' : suggestion ? 'name_address_distance' : null, input.importedAt]);
+        let candidateId = insertResult.rows[0]?.id;
+        let action: 'created' | 'updated' | 'exact_match';
+        if (candidateId) {
+          createdCount += 1;
+          action = exact ? 'exact_match' : 'created';
+        } else {
+          const existingResult = await client.query<{
+            id: string; coverage_area_id: string;
+          }>('SELECT id, coverage_area_id FROM poi_candidates WHERE provider = $1 AND provider_poi_id = $2 FOR UPDATE',
+          [input.provider, candidate.providerPoiId]);
+          const existing = existingResult.rows[0];
+          if (!existing) throw new Error('POI_CANDIDATE_UPSERT_FAILED');
+          if (existing.coverage_area_id !== input.coverageAreaId) throw new Error('POI_COVERAGE_MISMATCH');
+          candidateId = existing.id;
+          await client.query(`
+            UPDATE poi_candidates SET last_batch_id = $2, name = $3, address = $4, district = $5,
+              source_coord_type = $6, source_lat = $7, source_lng = $8, gcj02_lat = $9, gcj02_lng = $10,
+              location_wgs84 = ST_SetSRID(ST_MakePoint($11, $12), 4326)::geography,
+              phone_normalized = $13, raw_category = $14, observed_at = $15,
+              status = CASE WHEN $16::uuid IS NOT NULL THEN 'matched' ELSE status END,
+              matched_restaurant_id = coalesce($16, matched_restaurant_id),
+              suggested_restaurant_id = CASE WHEN $16::uuid IS NOT NULL THEN $16
+                WHEN status = 'pending' THEN $17 ELSE suggested_restaurant_id END,
+              suggestion_score = CASE WHEN $16::uuid IS NOT NULL THEN 1
+                WHEN status = 'pending' THEN $18 ELSE suggestion_score END,
+              match_method = CASE WHEN $16::uuid IS NOT NULL THEN 'provider_ref'
+                WHEN status = 'pending' AND $17::uuid IS NOT NULL THEN 'name_address_distance' ELSE match_method END,
+              last_seen_at = $19, updated_at = $19
+            WHERE id = $1
+          `, [candidateId, batch.id, candidate.name, candidate.address, candidate.district,
+            candidate.sourceCoordType, candidate.sourceLocation.lat, candidate.sourceLocation.lng,
+            gcj02?.lat ?? null, gcj02?.lng ?? null, candidate.locationWgs84.lng, candidate.locationWgs84.lat,
+            candidate.phoneNormalized, candidate.rawCategory, candidate.observedAt, exact?.id ?? null,
+            suggestion?.id ?? null, suggestion?.score ?? null, input.importedAt]);
+          updatedCount += 1;
+          action = exact ? 'exact_match' : 'updated';
+        }
+        if (exact) exactMatchCount += 1;
+        await client.query(`
+          INSERT INTO poi_import_batch_items (batch_id, candidate_id, provider_poi_id, action)
+          VALUES ($1, $2, $3, $4)
+        `, [batch.id, candidateId, candidate.providerPoiId, action]);
+      }
+
+      await client.query(`
+        UPDATE poi_import_batches
+        SET created_count = $2, updated_count = $3, exact_match_count = $4 WHERE id = $1
+      `, [batch.id, createdCount, updatedCount, exactMatchCount]);
+      const auditPayload = {
+        provider: input.provider,
+        coverage_area_id: input.coverageAreaId,
+        input_count: input.candidates.length,
+        created_count: createdCount,
+        updated_count: updatedCount,
+        exact_match_count: exactMatchCount,
+        authorization_basis: input.authorizationBasis
+      };
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, after_value, created_at)
+        VALUES ($1, 'import', 'poi_import_batch', $2, 'authorized_poi_import', $3::jsonb, $4)
+      `, [input.actorId, batch.id, JSON.stringify(auditPayload), input.importedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('poi.imported', $1, $2::jsonb, $3, $3)
+      `, [batch.id, JSON.stringify({ batch_id: batch.id, ...auditPayload }), input.importedAt]);
+      return {
+        batchId: batch.id,
+        inputCount: input.candidates.length,
+        createdCount,
+        updatedCount,
+        exactMatchCount,
+        created: true,
+        importedAt: batch.imported_at
+      };
+    });
+  }
+
+  async listPoiCandidates(query: PoiCandidateQuery): Promise<PoiCandidateRecord[]> {
+    const result = await this.pool.query<PoiCandidateRow>(`${poiCandidateSelect}
+      WHERE ($1::poi_candidate_status IS NULL OR pc.status = $1)
+        AND ($2::text IS NULL OR pc.coverage_area_id = $2)
+      ORDER BY pc.last_seen_at DESC, pc.id LIMIT $3
+    `, [query.status, query.coverageAreaId, query.limit]);
+    return result.rows.map(mapPoiCandidate);
+  }
+
+  async reviewPoiCandidate(id: string, review: PoiCandidateReview): Promise<PoiCandidateRecord> {
+    return withTransaction(this.pool, async client => {
+      const currentResult = await client.query<PoiCandidateRow>(`${poiCandidateSelect}
+        WHERE pc.id = $1 FOR UPDATE OF pc
+      `, [id]);
+      const current = currentResult.rows[0];
+      if (!current) throw new Error('POI_CANDIDATE_NOT_FOUND');
+      const nextStatus = assertPoiCandidateTransition(current.status, review);
+      let restaurant: { id: string; coverage_area_id: string } | null = null;
+      if (review.decision === 'match_existing') {
+        const restaurantResult = await client.query<{ id: string; coverage_area_id: string }>(`
+          SELECT id, coverage_area_id FROM restaurants
+          WHERE publish_status <> 'withdrawn' AND (id::text = $1 OR legacy_id = $1) LIMIT 1
+        `, [review.restaurantId]);
+        restaurant = restaurantResult.rows[0] ?? null;
+        if (!restaurant) throw new Error('RESTAURANT_NOT_FOUND');
+        if (restaurant.coverage_area_id !== current.coverage_area_id) throw new Error('POI_RESTAURANT_COVERAGE_MISMATCH');
+        await client.query(`
+          INSERT INTO restaurant_provider_refs (restaurant_id, provider, provider_poi_id, observed_at, raw_category)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT DO NOTHING
+        `, [restaurant.id, current.provider, current.provider_poi_id, review.reviewedAt, current.raw_category]);
+        const refResult = await client.query<{ restaurant_id: string }>(`
+          SELECT restaurant_id FROM restaurant_provider_refs WHERE provider = $1 AND provider_poi_id = $2
+        `, [current.provider, current.provider_poi_id]);
+        if (refResult.rows[0]?.restaurant_id !== restaurant.id) throw new Error('PROVIDER_REF_CONFLICT');
+      }
+
+      await client.query(`
+        UPDATE poi_candidates SET status = $2, matched_restaurant_id = coalesce($3, matched_restaurant_id),
+          match_method = CASE WHEN $3::uuid IS NOT NULL THEN 'operator' ELSE match_method END,
+          resolution_note = $4, reviewed_by = $5, reviewed_at = $6, updated_at = $6
+        WHERE id = $1
+      `, [id, nextStatus, restaurant?.id ?? null, review.resolutionNote, review.actorId, review.reviewedAt]);
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, 'review', 'poi_candidate', $2, 'operator_poi_decision', $3::jsonb, $4::jsonb, $5)
+      `, [review.actorId, id,
+        JSON.stringify({ status: current.status, matched_restaurant_id: current.matched_restaurant_id }),
+        JSON.stringify({ status: nextStatus, matched_restaurant_id: restaurant?.id ?? current.matched_restaurant_id, resolution_note: review.resolutionNote }),
+        review.reviewedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('poi.candidate_reviewed', $1, $2::jsonb, $3, $3)
+      `, [id, JSON.stringify({ candidate_id: id, status: nextStatus }), review.reviewedAt]);
+      const updatedResult = await client.query<PoiCandidateRow>(`${poiCandidateSelect} WHERE pc.id = $1`, [id]);
+      const updated = updatedResult.rows[0];
+      if (!updated) throw new Error('POI_CANDIDATE_NOT_FOUND');
+      return mapPoiCandidate(updated);
+    });
+  }
+
+  async getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord> {
+    const areaResult = await this.pool.query<{
+      id: string; name: string; city_code: string; status: CoverageQualityRecord['status']; quality_metrics: Record<string, unknown>;
+    }>(`
+      SELECT ca.id, ca.name, c.code AS city_code, ca.status, ca.quality_metrics
+      FROM coverage_areas ca JOIN cities c ON c.id = ca.city_id WHERE ca.id = $1
+    `, [areaId]);
+    const area = areaResult.rows[0];
+    if (!area) throw new Error('COVERAGE_AREA_NOT_FOUND');
+
+    const restaurantResult = await this.pool.query<{
+      published_count: number; recent_count: number; complete_count: number; provider_ref_count: number;
+    }>(`
+      SELECT
+        count(*)::integer AS published_count,
+        count(*) FILTER (WHERE r.last_verified_at >= $2 - interval '90 days')::integer AS recent_count,
+        count(*) FILTER (
+          WHERE sp.accepts_solo IS NOT NULL
+            AND cardinality(r.seat_types) > 0
+            AND EXISTS (
+              SELECT 1 FROM restaurant_cuisines rc WHERE rc.restaurant_id = r.id AND rc.is_primary
+            )
+        )::integer AS complete_count,
+        count(*) FILTER (
+          WHERE EXISTS (SELECT 1 FROM restaurant_provider_refs pr WHERE pr.restaurant_id = r.id)
+        )::integer AS provider_ref_count
+      FROM restaurants r
+      JOIN solo_profiles sp ON sp.restaurant_id = r.id
+      WHERE r.coverage_area_id = $1 AND r.publish_status = 'published'
+    `, [areaId, at]);
+    const restaurantMetrics = restaurantResult.rows[0]
+      ?? { published_count: 0, recent_count: 0, complete_count: 0, provider_ref_count: 0 };
+
+    const candidateResult = await this.pool.query<{ pending_high_confidence: number }>(`
+      SELECT count(*)::integer AS pending_high_confidence FROM poi_candidates
+      WHERE coverage_area_id = $1 AND status = 'pending' AND suggestion_score >= 0.8
+    `, [areaId]);
+    const pendingHighConfidence = candidateResult.rows[0]?.pending_high_confidence ?? 0;
+
+    const slaResult = await this.pool.query<{ eligible_count: number; on_time_count: number }>(`
+      SELECT
+        count(*) FILTER (
+          WHERE t.status IN ('completed', 'cancelled') OR (t.due_at IS NOT NULL AND t.due_at <= $2)
+        )::integer AS eligible_count,
+        count(*) FILTER (
+          WHERE t.status IN ('completed', 'cancelled') AND t.due_at IS NOT NULL AND t.updated_at <= t.due_at
+        )::integer AS on_time_count
+      FROM curation_tasks t
+      JOIN restaurants r ON r.id = t.restaurant_id
+      WHERE r.coverage_area_id = $1 AND t.priority = 0 AND t.reason LIKE 'feedback:%'
+    `, [areaId, at]);
+    const sla = slaResult.rows[0] ?? { eligible_count: 0, on_time_count: 0 };
+    const published = restaurantMetrics.published_count;
+    const manual = area.quality_metrics ?? {};
+    return {
+      areaId: area.id,
+      areaName: area.name,
+      cityCode: area.city_code,
+      status: area.status,
+      metrics: {
+        publishedRestaurants: published,
+        recentVerificationRate: published ? restaurantMetrics.recent_count / published : null,
+        coreCompletenessRate: published ? restaurantMetrics.complete_count / published : null,
+        providerReferenceRate: published ? restaurantMetrics.provider_ref_count / published : null,
+        searchSampleCoverageRate: optionalNumber(manual.search_sample_coverage_rate),
+        branchMismatchRate: optionalNumber(manual.branch_mismatch_rate),
+        visitConformityRate: optionalNumber(manual.visit_conformity_rate),
+        highPriorityFeedbackSlaRate: sla.eligible_count ? sla.on_time_count / sla.eligible_count : null,
+        incidentFreeWeeks: optionalNumber(manual.incident_free_weeks),
+        pendingHighConfidenceMatches: pendingHighConfidence,
+        providerTermsReviewed: optionalBoolean(manual.provider_terms_reviewed),
+        privacyReviewed: optionalBoolean(manual.privacy_reviewed),
+        postgisRehearsalPassed: optionalBoolean(manual.postgis_rehearsal_passed)
+      },
+      measuredAt: at.toISOString()
+    };
+  }
+
+  async updateCoverageQuality(areaId: string, update: CoverageQualityManualUpdate): Promise<CoverageQualityRecord> {
+    await withTransaction(this.pool, async client => {
+      const currentResult = await client.query<{ quality_metrics: Record<string, unknown> }>(`
+        SELECT quality_metrics FROM coverage_areas WHERE id = $1 FOR UPDATE
+      `, [areaId]);
+      const current = currentResult.rows[0]?.quality_metrics;
+      if (!current) throw new Error('COVERAGE_AREA_NOT_FOUND');
+      const next = {
+        ...current,
+        ...(update.searchSampleCoverageRate !== undefined ? { search_sample_coverage_rate: update.searchSampleCoverageRate } : {}),
+        ...(update.branchMismatchRate !== undefined ? { branch_mismatch_rate: update.branchMismatchRate } : {}),
+        ...(update.visitConformityRate !== undefined ? { visit_conformity_rate: update.visitConformityRate } : {}),
+        ...(update.incidentFreeWeeks !== undefined ? { incident_free_weeks: update.incidentFreeWeeks } : {}),
+        ...(update.providerTermsReviewed !== undefined ? { provider_terms_reviewed: update.providerTermsReviewed } : {}),
+        ...(update.privacyReviewed !== undefined ? { privacy_reviewed: update.privacyReviewed } : {}),
+        ...(update.postgisRehearsalPassed !== undefined ? { postgis_rehearsal_passed: update.postgisRehearsalPassed } : {})
+      };
+      await client.query(`
+        UPDATE coverage_areas SET quality_metrics = $2::jsonb, updated_at = $3 WHERE id = $1
+      `, [areaId, JSON.stringify(next), update.updatedAt]);
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, 'update_quality', 'coverage_area', $2, $3, $4::jsonb, $5::jsonb, $6)
+      `, [update.actorId, areaId, update.evidenceNote, JSON.stringify(current), JSON.stringify(next), update.updatedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('coverage.quality_updated', $1, $2::jsonb, $3, $3)
+      `, [areaId, JSON.stringify({ coverage_area_id: areaId, quality_metrics: next }), update.updatedAt]);
+    });
+    return this.getCoverageQuality(areaId, update.updatedAt);
   }
 
   async close(): Promise<void> {

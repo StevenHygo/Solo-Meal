@@ -106,6 +106,12 @@ assert(!operatorUsesExternalAsset, 'operator HTML and CSS do not depend on exter
 assert(!/localStorage|sessionStorage/.test(opsApp), 'operator credentials are not persisted in browser storage');
 assert(opsApp.includes("authorization: `Bearer ${state.token}`"), 'operator requests use bearer authorization');
 assert(opsApp.includes("parsedUrl.protocol !== 'https:'"), 'operator API rejects insecure non-local endpoints');
+assert(opsApp.includes("'/api/v1/admin/poi/imports'"), 'operator workbench imports authorized POI candidates');
+assert(opsApp.includes('/api/v1/admin/poi/candidates'), 'operator workbench reads and reviews POI candidates');
+assert(opsApp.includes('/api/v1/admin/coverage/'), 'operator workbench reads coverage quality gates');
+assert(opsApp.includes('state.poiImportCandidates'), 'operator POI files remain in page memory only');
+assert(opsApp.includes('maximumFractionDigits: 1'), 'operator quality percentages retain one decimal when needed');
+assert(!/data-poi-action="publish"/.test(opsHtml + opsApp), 'POI candidate workflow cannot publish restaurants directly');
 
 const opsIds = [...opsHtml.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert(new Set(opsIds).size === opsIds.length, 'operator HTML IDs are unique');

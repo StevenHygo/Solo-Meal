@@ -33,3 +33,18 @@ test('feedback operations migration is additive and reversible', async () => {
   assert.match(rollback, /DROP INDEX IF EXISTS audit_logs_entity_idx/);
   assert.match(rollback, /DROP COLUMN IF EXISTS resolution_note/);
 });
+
+test('POI candidate pipeline records licensed batches and remains reversible', async () => {
+  const migration = await readFile(path.resolve('migrations', '003_poi_candidate_pipeline.up.sql'), 'utf8');
+  const rollback = await readFile(path.resolve('migrations', '003_poi_candidate_pipeline.down.sql'), 'utf8');
+  assert.match(migration, /CREATE TYPE poi_candidate_status/);
+  assert.match(migration, /CREATE TABLE poi_import_batches/);
+  assert.match(migration, /authorization_basis text NOT NULL/);
+  assert.match(migration, /idempotency_key uuid NOT NULL UNIQUE/);
+  assert.match(migration, /CREATE TABLE poi_candidates/);
+  assert.match(migration, /location_wgs84 geography\(Point, 4326\) NOT NULL/);
+  assert.match(migration, /CREATE TABLE poi_import_batch_items/);
+  assert.doesNotMatch(migration, /raw_payload/);
+  assert.match(rollback, /DROP TABLE IF EXISTS poi_import_batch_items/);
+  assert.match(rollback, /DROP TYPE IF EXISTS poi_candidate_status/);
+});

@@ -49,6 +49,18 @@ export function assertTaskClaim(
   if (currentAssignee && nextAssignee && currentAssignee !== nextAssignee) throw new Error('TASK_ALREADY_CLAIMED');
 }
 
+export function addBusinessDays(value: Date, days: number, timeZone: string): Date {
+  const result = new Date(value);
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone });
+  let remaining = days;
+  while (remaining > 0) {
+    result.setUTCDate(result.getUTCDate() + 1);
+    const day = weekday.format(result);
+    if (day !== 'Sat' && day !== 'Sun') remaining -= 1;
+  }
+  return result;
+}
+
 export function toCurationTaskDto(task: CurationTaskRecord) {
   return {
     id: task.id,

@@ -27,7 +27,12 @@
       </div>
     </section>
 
-    <main class="workspace">
+    <nav class="mode-nav" id="modeNav" aria-label="运营工作区">
+      <button class="active" data-mode="tasks" type="button" aria-pressed="true">纠错复核</button>
+      <button data-mode="poi" type="button" aria-pressed="false">POI 候选</button>
+    </nav>
+
+    <main class="workspace" id="taskWorkspace">
       <aside class="queue-panel" aria-labelledby="queueTitle">
         <div class="panel-heading"><div><p>CURATION QUEUE</p><h2 id="queueTitle">复核队列 <span id="taskCount">0</span></h2></div><div class="panel-tools"><button class="secondary-button compact-button" id="sweepButton" type="button">扫描过期</button><button class="icon-button" id="refreshButton" type="button" title="刷新队列" aria-label="刷新队列">↻</button></div></div>
         <div class="status-tabs" id="statusTabs" role="tablist" aria-label="任务状态">
@@ -56,6 +61,85 @@
             <div class="review-actions" id="reviewActions"></div>
           </form>
           <div class="resolved-block hidden" id="resolvedBlock"><span>处理记录</span><strong id="resolvedValue">-</strong></div>
+        </div>
+      </section>
+    </main>
+
+    <section class="import-band hidden" id="poiImportBand" aria-labelledby="poiImportTitle">
+      <form class="import-form" id="poiImportForm">
+        <div class="import-heading"><p>AUTHORIZED SOURCE</p><h2 id="poiImportTitle">导入标准化 POI</h2></div>
+        <label><span>覆盖区域 ID</span><input id="poiCoverageInput" type="text" maxlength="80" placeholder="sh-xujiahui" required></label>
+        <label><span>Provider code</span><input id="poiProviderInput" type="text" maxlength="32" pattern="[a-z][a-z0-9_-]{1,31}" required></label>
+        <label><span>来源标签</span><input id="poiSourceInput" type="text" maxlength="120" required></label>
+        <label class="wide-field"><span>授权依据</span><input id="poiAuthorizationInput" type="text" minlength="10" maxlength="500" required></label>
+        <label class="file-field"><span>标准化 JSON</span><input id="poiFileInput" type="file" accept="application/json,.json" required><small id="poiFileStatus">未选择文件</small></label>
+        <div class="import-actions"><button class="primary-button" type="submit">导入候选</button><button class="secondary-button" id="cancelPoiImportButton" type="button">取消</button></div>
+      </form>
+    </section>
+
+    <section class="quality-band hidden" id="qualityBand" aria-labelledby="qualityTitle">
+      <div class="quality-inner">
+        <form class="quality-form" id="qualityForm">
+          <div><p>RELEASE GATE</p><h2 id="qualityTitle">覆盖质量门槛</h2></div>
+          <label><span>覆盖区域 ID</span><input id="qualityAreaInput" type="text" maxlength="80" placeholder="sh-xujiahui" required></label>
+          <button class="primary-button" type="submit">检查</button>
+          <button class="secondary-button" id="closeQualityButton" type="button">关闭</button>
+        </form>
+        <div class="quality-results hidden" id="qualityResults">
+          <div class="gate-summary" id="betaGateSummary"><span>Beta</span><strong>-</strong></div>
+          <div class="gate-summary" id="liveGateSummary"><span>Live</span><strong>-</strong></div>
+          <div class="gate-checks" id="qualityChecks"></div>
+        </div>
+        <form class="quality-update-form hidden" id="qualityUpdateForm">
+          <label><span>搜索覆盖率 %</span><input id="qualitySearchInput" type="number" min="0" max="100" step="0.1"></label>
+          <label><span>分店错配率 %</span><input id="qualityMismatchInput" type="number" min="0" max="100" step="0.1"></label>
+          <label><span>到店符合率 %</span><input id="qualityVisitInput" type="number" min="0" max="100" step="0.1"></label>
+          <label><span>无事故周数</span><input id="qualityIncidentInput" type="number" min="0" max="520" step="1"></label>
+          <div class="quality-checkboxes">
+            <label><input id="qualityProviderTermsInput" type="checkbox"><span>Provider 条款</span></label>
+            <label><input id="qualityPrivacyInput" type="checkbox"><span>隐私评审</span></label>
+            <label><input id="qualityPostgisInput" type="checkbox"><span>PostGIS 演练</span></label>
+          </div>
+          <label class="quality-evidence"><span>证据说明</span><textarea id="qualityEvidenceInput" minlength="10" maxlength="500" rows="2" required></textarea></label>
+          <button class="primary-button" type="submit">保存人工指标</button>
+        </form>
+      </div>
+    </section>
+
+    <main class="workspace hidden" id="poiWorkspace">
+      <aside class="queue-panel" aria-labelledby="poiQueueTitle">
+        <div class="panel-heading"><div><p>POI INBOX</p><h2 id="poiQueueTitle">候选队列 <span id="poiCount">0</span></h2></div><div class="panel-tools"><button class="secondary-button compact-button" id="openQualityButton" type="button">门槛</button><button class="secondary-button compact-button" id="openPoiImportButton" type="button">导入</button><button class="icon-button" id="refreshPoiButton" type="button" title="刷新候选" aria-label="刷新候选">↻</button></div></div>
+        <div class="status-tabs" id="poiStatusTabs" role="tablist" aria-label="POI 候选状态">
+          <button class="active" data-poi-status="pending" role="tab" aria-selected="true" type="button">待去重</button>
+          <button data-poi-status="new_branch" role="tab" aria-selected="false" type="button">新分店</button>
+          <button data-poi-status="matched" role="tab" aria-selected="false" type="button">已匹配</button>
+          <button data-poi-status="rejected" role="tab" aria-selected="false" type="button">已驳回</button>
+        </div>
+        <div class="task-list" id="poiList"><div class="queue-empty">连接后读取 POI 候选</div></div>
+      </aside>
+
+      <section class="detail-panel" aria-labelledby="poiDetailTitle">
+        <div class="detail-empty" id="poiDetailEmpty"><span aria-hidden="true">⌖</span><strong>选择一条 POI 候选</strong></div>
+        <div class="detail-content hidden" id="poiDetailContent">
+          <div class="detail-heading"><div><p>DEDUP REVIEW</p><h2 id="poiDetailTitle">候选详情</h2></div><span class="priority-badge" id="poiStatusBadge">待去重</span></div>
+          <dl class="task-facts">
+            <div><dt>Provider</dt><dd id="poiProviderValue">-</dd></div>
+            <div><dt>覆盖区域</dt><dd id="poiCoverageValue">-</dd></div>
+            <div><dt>分类</dt><dd id="poiCategoryValue">-</dd></div>
+            <div><dt>观察时间</dt><dd id="poiObservedValue">-</dd></div>
+          </dl>
+          <section class="report-block"><h3 id="poiNameValue">候选餐厅</h3><strong id="poiAddressValue">-</strong><p id="poiLocationValue">-</p></section>
+          <section class="match-block" id="poiSuggestionBlock"><span>重复建议</span><strong id="poiSuggestionValue">未发现相似分店</strong><small id="poiSuggestionScore">-</small></section>
+          <form class="review-form" id="poiReviewForm">
+            <label><span>已有餐厅 ID</span><input id="poiRestaurantInput" type="text" maxlength="80"></label>
+            <label><span>决策说明</span><textarea id="poiResolutionInput" maxlength="500" rows="5"></textarea><small><span id="poiResolutionCount">0</span> / 500</small></label>
+            <div class="review-actions" id="poiReviewActions">
+              <button class="primary-button" data-poi-action="match_existing" type="button">匹配已有分店</button>
+              <button class="secondary-button" data-poi-action="new_branch" type="button">确认为新分店</button>
+              <button class="danger-button" data-poi-action="reject" type="button">驳回候选</button>
+            </div>
+          </form>
+          <div class="resolved-block hidden" id="poiResolvedBlock"><span>处理记录</span><strong id="poiResolvedValue">-</strong></div>
         </div>
       </section>
     </main>
