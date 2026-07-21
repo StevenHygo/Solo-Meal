@@ -1,0 +1,171 @@
+.mine-page {
+  padding-top: 48rpx;
+}
+
+.profile-head {
+  display: flex;
+  align-items: center;
+}
+
+.profile-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 50%;
+  background: #173b33;
+  color: #efb973;
+  font-size: 60rpx;
+  font-weight: 800;
+}
+
+.profile-copy {
+  margin-left: 22rpx;
+}
+
+.profile-title {
+  margin-top: 8rpx;
+  color: #173b33;
+  font-size: 38rpx;
+  font-weight: 800;
+}
+
+.profile-subtitle {
+  margin-top: 8rpx;
+  color: #8b918b;
+  font-size: 22rpx;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14rpx;
+  margin-top: 40rpx;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24rpx 10rpx;
+}
+
+.stat-number {
+  color: #176b5c;
+  font-size: 36rpx;
+  font-weight: 800;
+}
+
+.stat-label {
+  margin-top: 8rpx;
+  color: #838a83;
+  font-size: 20rpx;
+}
+
+.settings-section {
+  margin-top: 48rpx;
+}
+
+.budget-options {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 20rpx;
+}
+
+.budget-option {
+  min-height: 62rpx;
+  margin: 0 12rpx 12rpx 0;
+  padding: 0 22rpx;
+  border: 1rpx solid #e1e3dc;
+  border-radius: 4px;
+  background: #fffdf8;
+  color: #68746e;
+  font-size: 23rpx;
+}
+
+.budget-option.selected {
+  border-color: #176b5c;
+  background: #eaf3ee;
+  color: #176b5c;
+  font-weight: 700;
+}
+
+.settings-list {
+  margin-top: 20rpx;
+  overflow: hidden;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 104rpx;
+  padding: 18rpx 22rpx;
+  border-bottom: 1rpx solid #ece9df;
+  text-align: left;
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-row view {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-name {
+  color: #30443d;
+  font-size: 25rpx;
+  font-weight: 700;
+}
+
+.settings-name.danger {
+  color: #b75c40;
+}
+
+.settings-desc {
+  margin-top: 7rpx;
+  color: #929891;
+  font-size: 20rpx;
+}
+
+.settings-arrow {
+  color: #a5aaa4;
+  font-size: 40rpx;
+}
+
+.verified-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36rpx;
+  height: 36rpx;
+  border-radius: 50%;
+  background: #eaf3ee;
+  color: #176b5c;
+  font-size: 19rpx;
+  font-weight: 800;
+}
+
+.principle-card {
+  margin-top: 48rpx;
+  padding: 28rpx;
+  border-left: 4rpx solid #efb973;
+  background: #173b33;
+  color: #fffdf8;
+}
+
+.principle-title {
+  font-size: 27rpx;
+  font-weight: 800;
+}
+
+.principle-copy {
+  margin-top: 10rpx;
+  color: rgba(255, 253, 248, 0.68);
+  font-size: 21rpx;
+  line-height: 1.5;
+}

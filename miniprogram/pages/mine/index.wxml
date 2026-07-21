@@ -1,0 +1,44 @@
+<view class="page mine-page">
+  <view class="profile-head">
+    <view class="profile-mark">1</view>
+    <view class="profile-copy">
+      <view class="eyebrow">LOCAL PROFILE</view>
+      <view class="profile-title">我的一人食</view>
+      <view class="profile-subtitle">本机模式 · 无需登录</view>
+    </view>
+  </view>
+
+  <view class="stats-grid">
+    <view class="stat-card card"><text class="stat-number">{{favoriteCount}}</text><text class="stat-label">收藏餐厅</text></view>
+    <view class="stat-card card"><text class="stat-number">{{reportCount}}</text><text class="stat-label">纠错提交</text></view>
+    <view class="stat-card card"><text class="stat-number">0</text><text class="stat-label">公开内容</text></view>
+  </view>
+
+  <view class="settings-section">
+    <view class="section-title">默认预算</view>
+    <view class="budget-options">
+      <button wx:for="{{budgets}}" wx:key="key" class="budget-option {{budget === item.key ? 'selected' : ''}}" data-value="{{item.key}}" bindtap="chooseBudget">{{item.label}}</button>
+    </view>
+  </view>
+
+  <view class="settings-section">
+    <view class="section-title">数据与隐私</view>
+    <view class="settings-list card">
+      <button class="settings-row" bindtap="openPrivacy"><view><text class="settings-name">位置与隐私</text><text class="settings-desc">一次定位，不保存轨迹</text></view><text class="settings-arrow">›</text></button>
+      <button class="settings-row" bindtap="clearData"><view><text class="settings-name danger">清除本机数据</text><text class="settings-desc">收藏、偏好与纠错记录</text></view><text class="settings-arrow">›</text></button>
+    </view>
+  </view>
+
+  <view class="settings-section">
+    <view class="section-title">关于</view>
+    <view class="settings-list card">
+      <button class="settings-row" bindtap="openAbout"><view><text class="settings-name">当前版本</text><text class="settings-desc">{{version}} · v0 本地数据模式</text></view><text class="settings-arrow">›</text></button>
+      <view class="settings-row static"><view><text class="settings-name">数据来源</text><text class="settings-desc">地图 POI 模型 + 运营核验样例</text></view><text class="verified-mark">✓</text></view>
+    </view>
+  </view>
+
+  <view class="principle-card">
+    <view class="principle-title">一个人吃，也值得被认真对待。</view>
+    <view class="principle-copy">v0 只做确定、可核验的信息，不生成不存在的推荐理由。</view>
+  </view>
+</view>
