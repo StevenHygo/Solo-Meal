@@ -1,0 +1,120 @@
+<view wx:if="{{restaurant}}" class="detail-page safe-bottom">
+  <view class="detail-hero">
+    <view class="hero-pattern">
+      <view class="pattern-line one"></view>
+      <view class="pattern-line two"></view>
+      <view class="pattern-line three"></view>
+      <view class="hero-seat">1</view>
+    </view>
+    <view class="hero-overlay">
+      <view class="eyebrow light">SOLO VERIFIED</view>
+      <view class="detail-name">{{restaurant.name}}</view>
+      <view class="detail-location">{{restaurant.cuisine}} · {{restaurant.distance}}m · {{restaurant.district}}</view>
+    </view>
+  </view>
+
+  <view class="detail-body">
+    <view class="decision-card card">
+      <view class="decision-score {{restaurant.confidence}}">
+        <text class="decision-number">{{restaurant.soloScore}}</text>
+        <text class="decision-label">单人适合度</text>
+      </view>
+      <view class="decision-copy">
+        <view class="decision-title">一个人来，比较稳妥</view>
+        <view class="decision-meta">{{restaurant.confidenceLabel}} · {{restaurant.verifiedAt}}核验</view>
+      </view>
+      <button class="heart-button {{favorite ? 'active' : ''}}" bindtap="toggleFavorite">{{favorite ? '♥' : '♡'}}</button>
+    </view>
+
+    <view class="reason-block">
+      <text wx:for="{{restaurant.reasons}}" wx:key="*this" class="tag accent">{{item}}</text>
+    </view>
+
+    <view class="section section-band">
+      <view class="section-title">最重要的几件事</view>
+      <view class="fact-grid">
+        <view class="fact-item">
+          <text class="fact-kicker">座位</text>
+          <text class="fact-value">{{seatText}}</text>
+          <text class="fact-note">吧台 {{restaurant.counterSeats}} 席</text>
+        </view>
+        <view class="fact-item">
+          <text class="fact-kicker">点餐</text>
+          <text class="fact-value">{{restaurant.soloPortion ? '有单人份' : '部分可小份'}}</text>
+          <text class="fact-note">{{minimumSpendText}}</text>
+        </view>
+        <view class="fact-item">
+          <text class="fact-kicker">时间</text>
+          <text class="fact-value">{{restaurant.mealMinutes[0]}}-{{restaurant.mealMinutes[1]}} 分钟</text>
+          <text class="fact-note">非实时排队数据</text>
+        </view>
+        <view class="fact-item">
+          <text class="fact-kicker">氛围</text>
+          <text class="fact-value">{{noiseText}}</text>
+          <text class="fact-note">运营现场观察</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="section">
+      <view class="section-row">
+        <text class="section-title">为什么这样判断</text>
+        <text class="confidence-pill">{{restaurant.confidenceLabel}}</text>
+      </view>
+      <view class="evidence-list">
+        <view wx:for="{{restaurant.evidence}}" wx:key="title" class="evidence-row">
+          <view class="evidence-mark">✓</view>
+          <view class="evidence-content">
+            <view class="evidence-title"><text>{{item.title}}</text><text>{{item.time}}</text></view>
+            <view class="evidence-value">{{item.value}}</view>
+            <view class="evidence-source">来源：{{item.source}}</view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view class="section section-band">
+      <view class="section-title">点什么</view>
+      <view class="dish-list"><text wx:for="{{restaurant.dishes}}" wx:key="*this" class="dish-item"><text class="dish-dot">●</text>{{item}}</text></view>
+      <view class="price-summary"><text>一个人大约</text><text class="price-number">¥{{restaurant.priceMin}}-{{restaurant.priceMax}}</text></view>
+    </view>
+
+    <view class="section">
+      <view class="section-title">到店信息</view>
+      <view class="info-list">
+        <view class="info-row"><text class="info-label">营业</text><text class="info-value">{{restaurant.hours}}</text><text class="status-text {{restaurant.openNow ? 'open' : ''}}">{{restaurant.openNow ? '营业中' : '暂未营业'}}</text></view>
+        <view class="info-row"><text class="info-label">地址</text><text class="info-value">{{restaurant.address}}</text></view>
+        <view class="info-row"><text class="info-label">高峰</text><text class="info-value">{{restaurant.peakPolicy}}</text></view>
+      </view>
+      <view class="detail-actions">
+        <button class="secondary-button" bindtap="copyAddress">复制地址</button>
+        <button class="primary-button" bindtap="openLocation">打开导航</button>
+      </view>
+    </view>
+
+    <view class="operator-note">
+      <text class="quote-mark">“</text>
+      <text>{{restaurant.note}}</text>
+    </view>
+
+    <button class="report-link" bindtap="openReport">信息不准确？提交纠错</button>
+  </view>
+
+  <view class="sticky-action">
+    <button class="save-action" bindtap="toggleFavorite">{{favorite ? '已收藏' : '收藏'}}</button>
+    <button class="nav-action" bindtap="openLocation">导航去这里 <text>→</text></button>
+  </view>
+
+  <view wx:if="{{reportOpen}}" class="report-mask" catchtap="closeReport">
+    <view class="report-sheet" catchtap="noop">
+      <view class="report-head"><text class="report-title">哪里不准确？</text><button class="close-button" bindtap="closeReport">×</button></view>
+      <view class="report-sub">纠错不会直接修改页面，运营核验后才会发布。</view>
+      <view class="report-options">
+        <button wx:for="{{reportTypes}}" wx:key="*this" class="report-option {{selectedReport === item ? 'selected' : ''}}" data-value="{{item}}" bindtap="chooseReport">{{item}}</button>
+      </view>
+      <textarea class="report-textarea" maxlength="200" placeholder="可选补充，最多 200 字" value="{{reportNote}}" bindinput="onReportNote"></textarea>
+      <view class="report-count">{{reportNote.length}} / 200</view>
+      <button class="primary-button" bindtap="submitReport">提交复核</button>
+    </view>
+  </view>
+</view>
