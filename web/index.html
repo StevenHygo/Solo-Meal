@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f6f0" />
+    <meta name="description" content="一人食：找到一个人也舒服的餐厅。" />
+    <title>一人食 · 一个人也好好吃饭</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="site-header">
+        <a class="brand-lockup" href="#discover" aria-label="一人食首页">
+          <span class="brand-kicker">SOLO MEAL / V0</span>
+          <span class="brand-name">一人食</span>
+        </a>
+        <div class="header-actions">
+          <button class="location-pill" id="locationButton" type="button">
+            <span class="icon" aria-hidden="true">⌖</span>
+            <span id="locationLabel">静安寺附近</span>
+          </button>
+          <button class="header-action" id="aboutButton" type="button">关于</button>
+        </div>
+      </header>
+
+      <main id="discover" class="page-frame">
+        <section class="hero-section">
+          <div class="hero-copy">
+            <p class="eyebrow">A BETTER TABLE FOR ONE</p>
+            <h1>今天，想在哪里<br /><em>好好吃一顿？</em></h1>
+            <p class="hero-subtitle">从一个人也舒服的座位开始选。</p>
+          </div>
+          <div class="hero-signal" aria-label="当前试点区域状态">
+            <span class="signal-ring"><span></span></span>
+            <span><strong>试点区域</strong><small>静安寺 · 南京西路</small></span>
+          </div>
+        </section>
+
+        <section class="search-section" aria-label="餐厅搜索">
+          <form class="search-bar" id="searchForm">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="searchInput" type="search" placeholder="搜索商圈、地铁站或餐厅" autocomplete="off" />
+            <button class="search-submit" type="submit">找店 <span aria-hidden="true">↗</span></button>
+          </form>
+          <button class="manual-location" id="manualLocation" type="button"><span aria-hidden="true">●</span> 使用当前位置 <span aria-hidden="true">›</span></button>
+        </section>
+
+        <section class="scene-section" aria-labelledby="sceneTitle">
+          <div class="section-heading compact-heading">
+            <div><p class="eyebrow">START WITH YOUR MOOD</p><h2 id="sceneTitle">按现在的状态找</h2></div>
+            <span class="section-note">少一点纠结</span>
+          </div>
+          <div class="scene-grid" id="sceneGrid">
+            <button class="scene-card active" data-scene="now" type="button"><span class="scene-symbol">◷</span><strong>现在吃</strong><small>看营业中的店</small></button>
+            <button class="scene-card" data-scene="quick" type="button"><span class="scene-symbol">↯</span><strong>快速解决</strong><small>40 分钟内吃完</small></button>
+            <button class="scene-card" data-scene="quiet" type="button"><span class="scene-symbol">○</span><strong>安静坐坐</strong><small>低压力的座位</small></button>
+            <button class="scene-card" data-scene="budget" type="button"><span class="scene-symbol">¥</span><strong>预算友好</strong><small>人均 30 元内</small></button>
+          </div>
+        </section>
+
+        <section class="results-section" aria-labelledby="resultsTitle">
+          <div class="section-heading results-heading">
+            <div><p class="eyebrow">CURATED NEARBY</p><h2 id="resultsTitle">附近的稳妥选择 <span id="resultCount">0</span></h2></div>
+            <div class="heading-actions">
+              <button class="text-button" id="favoritesButton" type="button">我的收藏 <span aria-hidden="true">›</span></button>
+              <button class="icon-button filter-trigger" id="filterButton" type="button" title="筛选" aria-label="筛选">☷<span class="filter-indicator" id="filterIndicator"></span></button>
+            </div>
+          </div>
+
+          <div class="result-toolbar">
+            <div class="active-filter-summary" id="activeFilterSummary">现在吃 · 一个人</div>
+            <div class="view-switch" role="group" aria-label="结果视图">
+              <button class="view-button active" data-view="list" type="button">列表</button>
+              <button class="view-button" data-view="map" type="button">地图</button>
+            </div>
+          </div>
+
+          <div class="results-layout">
+            <div class="result-list" id="resultList"></div>
+            <div class="map-panel" id="mapPanel" aria-label="餐厅示意地图">
+              <div class="map-label map-label-a">静安寺</div>
+              <div class="map-label map-label-b">常德路</div>
+              <div class="map-label map-label-c">南京西路</div>
+              <div class="map-road road-a"></div><div class="map-road road-b"></div><div class="map-road road-c"></div>
+              <div class="map-block block-a"></div><div class="map-block block-b"></div><div class="map-block block-c"></div>
+              <div id="mapMarkers"></div>
+              <div class="map-legend"><span class="legend-dot"></span>单人友好候选 · 点击分数查看详情</div>
+            </div>
+          </div>
+
+          <div class="empty-state hidden" id="emptyState">
+            <span class="empty-symbol">⌁</span>
+            <h3>还没有合适的结果</h3>
+            <p>可以清除搜索和筛选条件，仍然保留“一个人可吃”这个核心条件。</p>
+            <button class="primary-button" id="relaxButton" type="button">查看全部餐厅</button>
+          </div>
+          <p class="result-note"><span>i</span>排序基于单人座位、单人份、距离和核验新鲜度；不是实时排队数据。</p>
+        </section>
+      </main>
+
+      <nav class="mobile-nav" aria-label="主导航">
+        <button class="mobile-nav-item active" data-nav="discover" type="button"><span>⌂</span>发现</button>
+        <button class="mobile-nav-item" data-nav="favorites" type="button"><span>♡</span>收藏</button>
+        <button class="mobile-nav-item" data-nav="settings" type="button"><span>◌</span>我的</button>
+      </nav>
+    </div>
+
+    <div class="overlay hidden" id="filterOverlay" role="dialog" aria-modal="true" aria-labelledby="filterTitle">
+      <section class="sheet filter-sheet">
+        <div class="sheet-header"><div><p class="eyebrow">REFINE YOUR SEARCH</p><h2 id="filterTitle">筛选条件</h2></div><button class="close-button" data-close="filterOverlay" type="button" aria-label="关闭">×</button></div>
+        <div class="filter-content">
+          <fieldset><legend>预算上限</legend><div class="option-grid" id="budgetOptions"></div></fieldset>
+          <fieldset><legend>食物品种</legend><div class="option-grid cuisine-options" id="cuisineOptions"></div></fieldset>
+          <fieldset><legend>用餐偏好</legend><div class="toggle-list">
+            <label class="toggle-row"><span>只看接待单人</span><input id="soloToggle" type="checkbox" checked /><span class="toggle-ui"></span></label>
+            <label class="toggle-row"><span>现在营业</span><input id="openToggle" type="checkbox" /><span class="toggle-ui"></span></label>
+            <label class="toggle-row"><span>40 分钟内解决</span><input id="fastToggle" type="checkbox" /><span class="toggle-ui"></span></label>
+          </div></fieldset>
+          <fieldset><legend>距离</legend><div class="option-grid" id="distanceOptions"></div></fieldset>
+        </div>
+        <div class="sheet-footer"><button class="secondary-button" id="resetFilters" type="button">重置</button><button class="primary-button" id="applyFilters" type="button">查看结果</button></div>
+      </section>
+    </div>
+
+    <div class="overlay hidden" id="detailOverlay" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <section class="detail-panel" id="detailPanel"></section>
+    </div>
+
+    <div class="overlay hidden" id="favoritesOverlay" role="dialog" aria-modal="true" aria-labelledby="favoritesTitle">
+      <section class="sheet favorites-sheet">
+        <div class="sheet-header"><div><p class="eyebrow">PRIVATE LIST</p><h2 id="favoritesTitle">我的收藏</h2></div><button class="close-button" data-close="favoritesOverlay" type="button" aria-label="关闭">×</button></div>
+        <div id="favoritesContent"></div>
+      </section>
+    </div>
+
+    <div class="overlay hidden" id="reportOverlay" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
+      <section class="sheet report-sheet">
+        <div class="sheet-header"><div><p class="eyebrow">DATA CHECK</p><h2 id="reportTitle">哪里不准确？</h2></div><button class="close-button" data-close="reportOverlay" type="button" aria-label="关闭">×</button></div>
+        <p class="sheet-description">纠错不会直接修改页面，复核后才会发布。</p>
+        <div class="report-options" id="reportOptions"></div>
+        <textarea id="reportNote" maxlength="200" placeholder="可选补充，最多 200 字"></textarea>
+        <div class="textarea-counter"><span id="reportCounter">0</span> / 200</div>
+        <button class="primary-button full-button" id="submitReport" type="button">提交复核</button>
+      </section>
+    </div>
+
+    <div class="overlay hidden" id="settingsOverlay" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <section class="sheet settings-sheet">
+        <div class="sheet-header"><div><p class="eyebrow">LOCAL PROFILE</p><h2 id="settingsTitle">我的一人食</h2></div><button class="close-button" data-close="settingsOverlay" type="button" aria-label="关闭">×</button></div>
+        <div class="settings-status"><span class="status-orb">1</span><div><strong>本机模式</strong><small>v0 私有收藏 · 无需登录</small></div></div>
+        <div class="settings-group"><h3>默认预算</h3><div class="option-grid" id="preferenceOptions"></div></div>
+        <div class="settings-group"><h3>数据与隐私</h3><div class="settings-menu"><button type="button" id="privacyButton"><span><strong>位置与隐私</strong><small>一次定位，不保存轨迹</small></span><b>›</b></button><button type="button" id="clearDataButton"><span><strong class="danger-text">清除本机数据</strong><small>收藏、预算与纠错记录</small></span><b>›</b></button></div></div>
+        <div class="settings-note"><strong>一个人吃，也值得被认真对待。</strong><span>v0 只做确定、可核验的信息。</span></div>
+      </section>
+    </div>
+
+    <div class="toast hidden" id="toast" role="status"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
