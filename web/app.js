@@ -1,4 +1,3 @@
-import { restaurants } from './data.js';
 import {
   WEB_VERSION,
   cities,
@@ -9,6 +8,7 @@ import {
   getCuisine,
   locationSuggestions
 } from './config.js';
+import { restaurantRepository } from './services/restaurant-repository.js';
 
 const STORAGE = {
   favorites: 'solo-meal-web-favorites',
@@ -53,7 +53,13 @@ const state = {
   selectedReportType: '',
   locationLabel: '静安寺附近',
   cityCode: 'shanghai',
-  coverageAreaCode: 'sh-jingan-huangpu'
+  coverageAreaCode: 'sh-jingan-huangpu',
+  location: { lat: 31.2231, lng: 121.4452, coordType: 'gcj02' },
+  dataSource: { source: 'static', snapshotVersion: 'v1-beta.1', cachedAt: null },
+  searchSequence: 0,
+  detailSequence: 0,
+  favoritesSequence: 0,
+  fallbackNotified: false
 };
 
 const el = id => document.getElementById(id);
@@ -113,6 +119,19 @@ function getCurrentCoverage() {
   return { city, area, status, searchable: status === 'live' || status === 'beta' };
 }
 
+function formatCacheTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(date);
+}
+
 function renderCoverageState() {
   const { city, area, status } = getCurrentCoverage();
   const statusCopy = coverageStatus[status] || coverageStatus.unsupported;
@@ -126,10 +145,20 @@ function renderCoverageState() {
   el('heroSignal').dataset.status = status;
   el('coverageStatus').textContent = statusCopy.label;
   el('coverageStatus').dataset.status = status;
-  el('coverageMessage').textContent = status === 'beta'
+  const baseMessage = status === 'beta'
     ? '当前为 Beta 覆盖，数据仍在持续补充；推荐来自已核验样本。'
     : statusCopy.description;
-  el('coverageBanner').classList.toggle('hidden', status === 'live');
+  const fallbackMessage = state.dataSource.source === 'fallback' ? ' API 暂不可用，已回退到随版本发布的快照。' : '';
+  const cacheTime = formatCacheTime(state.dataSource.cachedAt);
+  const cacheMessage = state.dataSource.source === 'cache'
+    ? ` 当前显示${cacheTime ? ` ${cacheTime}` : ''}的上次成功结果。`
+    : '';
+  el('coverageMessage').textContent = `${baseMessage}${fallbackMessage}${cacheMessage}`;
+  const degraded = state.dataSource.source === 'fallback' || state.dataSource.source === 'cache';
+  el('coverageBanner').classList.toggle('hidden', status === 'live' && !degraded);
+
+  const sourceLabels = { api: 'API 实时查询', static: '静态快照', fallback: '静态降级', cache: '上次结果' };
+  el('dataSourceStatus').textContent = sourceLabels[state.dataSource.source] || '数据源未知';
 }
 
 function renderEmptyState() {
@@ -147,33 +176,33 @@ function renderEmptyState() {
   el('relaxButton').textContent = copy[2];
 }
 
-function searchRestaurants() {
-  const keyword = state.keyword.trim().toLowerCase();
-  const { budget, cuisine, onlySolo, openNow, fastMeal, maxDistance } = state.filters;
-  const quietMode = state.scene === 'quiet';
-
+async function searchRestaurants() {
+  const sequence = ++state.searchSequence;
   const coverage = getCurrentCoverage();
-  state.results = restaurants
-    .filter(item => {
-      if (!coverage.searchable) return false;
-      if (item.cityCode !== state.cityCode || item.coverageAreaCode !== state.coverageAreaCode) return false;
-      const searchable = [item.name, item.cuisine, item.district, item.address].join(' ').toLowerCase();
-      if (keyword && !searchable.includes(keyword)) return false;
-      if (budget && item.priceMin > Number(budget)) return false;
-      if (cuisine !== 'all' && item.cuisineCode !== cuisine) return false;
-      if (onlySolo && !item.acceptsSolo) return false;
-      if (openNow && !item.openNow) return false;
-      if (fastMeal && item.mealMinutes[1] > 40) return false;
-      if (maxDistance && item.distance > Number(maxDistance)) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      const quietA = quietMode ? (5 - a.noiseLevel) * 3 : 0;
-      const quietB = quietMode ? (5 - b.noiseLevel) * 3 : 0;
-      const scoreA = a.soloScore - a.distance / 250 + quietA;
-      const scoreB = b.soloScore - b.distance / 250 + quietB;
-      return scoreB - scoreA;
-    });
+  el('resultList').setAttribute('aria-busy', 'true');
+  const response = await restaurantRepository.search({
+    keyword: state.keyword,
+    scene: state.scene,
+    filters: { ...state.filters },
+    cityCode: state.cityCode,
+    coverageAreaCode: state.coverageAreaCode,
+    coverageSearchable: coverage.searchable,
+    location: { ...state.location }
+  });
+  if (sequence !== state.searchSequence) return;
+  state.results = response.results;
+  state.dataSource = {
+    source: response.source,
+    snapshotVersion: response.snapshotVersion,
+    cachedAt: response.cachedAt
+  };
+  el('resultList').setAttribute('aria-busy', 'false');
+
+  if (response.source === 'fallback' && !state.fallbackNotified) {
+    state.fallbackNotified = true;
+    showToast('API 暂不可用，已使用静态快照');
+  }
+  if (response.source === 'api') state.fallbackNotified = false;
 
   renderResults();
   renderMap();
@@ -272,11 +301,8 @@ function renderPreferenceOptions() {
   el('preferenceOptions').innerHTML = budgetOptions.map(option => `<button class="option-button ${option.value === budget ? 'selected' : ''}" data-preference-budget="${option.value}" type="button">${escapeHtml(option.label)}</button>`).join('');
 }
 
-function openDetail(id) {
-  const item = restaurants.find(restaurant => restaurant.id === id);
-  if (!item) return;
-  closeOverlay('favoritesOverlay');
-  state.selectedRestaurantId = id;
+function renderDetail(item) {
+  const id = item.id;
   const noiseText = ['未知', '很安静', '较安静', '一般', '较热闹', '很热闹'][item.noiseLevel] || '未知';
   const minimumSpendText = item.minSpend ? `最低约 ¥${item.minSpend}` : '无明确最低消费';
   const favorite = isFavorite(id);
@@ -313,21 +339,60 @@ function openDetail(id) {
       <button class="report-button" data-open-report="${item.id}" type="button">信息不准确？提交纠错</button>
     </div>
   `;
-  openOverlay('detailOverlay');
 }
 
-function renderFavorites() {
-  const favoriteItems = getFavoriteIds().map(id => restaurants.find(item => item.id === id)).filter(Boolean);
+async function openDetail(id) {
+  const sequence = ++state.detailSequence;
+  closeOverlay('favoritesOverlay');
+  state.selectedRestaurantId = id;
+  el('detailPanel').innerHTML = `
+    <div class="detail-loading" role="status">
+      <button class="close-button detail-close" data-close="detailOverlay" type="button" aria-label="关闭">×</button>
+      <span>正在读取餐厅信息…</span>
+    </div>
+  `;
+  openOverlay('detailOverlay');
+
+  const response = await restaurantRepository.getRestaurant(id);
+  if (sequence !== state.detailSequence || state.selectedRestaurantId !== id) return;
+  if (!response.restaurant) {
+    el('detailPanel').innerHTML = `
+      <div class="detail-loading detail-error" role="alert">
+        <button class="close-button detail-close" data-close="detailOverlay" type="button" aria-label="关闭">×</button>
+        <div><strong>暂时无法读取餐厅详情</strong><span>可以稍后重试，已有收藏不会受影响。</span><button class="secondary-button" data-open-detail="${escapeHtml(id)}" type="button">重新加载</button></div>
+      </div>
+    `;
+    return;
+  }
+  renderDetail(response.restaurant);
+}
+
+async function renderFavorites() {
+  const sequence = ++state.favoritesSequence;
+  const favoriteIds = getFavoriteIds();
   const container = el('favoritesContent');
   container.className = 'favorites-content';
-  if (!favoriteItems.length) {
+  if (!favoriteIds.length) {
     container.innerHTML = '<div class="empty-list"><strong>还没有收藏</strong>在餐厅详情中点击爱心，收藏会只保存在这台设备。</div>';
     return;
   }
-  container.innerHTML = favoriteItems.map(item => {
+
+  container.innerHTML = '<div class="favorites-loading" role="status">正在读取收藏…</div>';
+  const favoriteItems = await Promise.all(favoriteIds.map(async id => {
+    const cached = restaurantRepository.getCachedRestaurant(id);
+    if (cached) return { id, item: cached };
+    const response = await restaurantRepository.getRestaurant(id);
+    return { id, item: response.restaurant };
+  }));
+  if (sequence !== state.favoritesSequence) return;
+
+  container.innerHTML = favoriteItems.map(({ id, item }) => {
+    if (!item) {
+      return `<div class="favorite-row favorite-unavailable"><div><h3>餐厅信息暂不可用</h3><p>收藏编号 ${escapeHtml(id)}</p><button class="favorite-remove" data-remove-favorite="${escapeHtml(id)}" type="button">取消收藏</button></div></div>`;
+    }
     const cuisine = getCuisine(item.cuisineCode);
     return `
-    <div class="favorite-row"><div><h3><button class="text-button" data-open-detail="${item.id}" type="button">${escapeHtml(item.name)} ›</button></h3><p>${cuisineIconMarkup(item.cuisineCode)}${escapeHtml(cuisine.label)} · ${item.distance}m · ¥${item.priceMin}-${item.priceMax}</p><small>${escapeHtml(item.reasons[0])}</small><button class="favorite-remove" data-remove-favorite="${item.id}" type="button">取消收藏</button></div><span class="favorite-score">${item.soloScore}</span></div>
+    <div class="favorite-row"><div><h3><button class="text-button" data-open-detail="${item.id}" type="button">${escapeHtml(item.name)} ›</button></h3><p>${cuisineIconMarkup(item.cuisineCode)}${escapeHtml(cuisine.label)} · ${item.distance}m · ¥${item.priceMin}-${item.priceMax}</p><small>${escapeHtml(item.reasons?.[0] || '已收藏，详情待核验')}</small><button class="favorite-remove" data-remove-favorite="${item.id}" type="button">取消收藏</button></div><span class="favorite-score">${item.soloScore}</span></div>
   `;
   }).join('');
 }
@@ -433,10 +498,13 @@ function openLocationSelector() {
   requestAnimationFrame(() => el('locationSearch').focus());
 }
 
-function selectLocation(cityCode, areaCode, label) {
+function selectLocation(cityCode, areaCode, label, location = null) {
+  const city = getCity(cityCode);
   state.cityCode = cityCode;
   state.coverageAreaCode = areaCode || '';
-  state.locationLabel = label || getCity(cityCode)?.name || '当前位置';
+  state.locationLabel = label || city?.name || '当前位置';
+  if (location) state.location = { ...location };
+  else if (city?.locationCenterWgs84) state.location = { ...city.locationCenterWgs84, coordType: 'wgs84' };
   state.keyword = '';
   state.filters.maxDistance = '';
   el('locationLabel').textContent = state.locationLabel;
@@ -469,7 +537,7 @@ function requestLocation() {
   el('locationLabel').textContent = '正在定位…';
   navigator.geolocation.getCurrentPosition(
     position => {
-      const current = { lat: position.coords.latitude, lng: position.coords.longitude };
+      const current = { lat: position.coords.latitude, lng: position.coords.longitude, coordType: 'wgs84' };
       const nearest = cities
         .filter(city => city.locationCenterWgs84)
         .map(city => ({ city, distance: distanceKm(current, city.locationCenterWgs84) }))
@@ -478,12 +546,13 @@ function requestLocation() {
       if (nearest && nearest.distance <= 50) {
         const area = nearest.city.areas.find(candidate => candidate.status === 'live' || candidate.status === 'beta')
           || nearest.city.areas[0];
-        selectLocation(nearest.city.code, area?.code || '', '当前位置附近');
+        selectLocation(nearest.city.code, area?.code || '', '当前位置附近', current);
         return;
       }
 
       state.cityCode = '';
       state.coverageAreaCode = '';
+      state.location = current;
       state.locationLabel = '当前位置附近';
       el('locationLabel').textContent = state.locationLabel;
       closeOverlay('locationOverlay');
@@ -504,7 +573,10 @@ function handleDocumentClick(event) {
 
   const location = event.target.closest('[data-select-location]');
   if (location) {
-    selectLocation(location.dataset.cityCode, location.dataset.areaCode, location.dataset.locationLabel);
+    const suggestion = locationSuggestions.find(item => item.cityCode === location.dataset.cityCode
+      && (item.areaCode || '') === location.dataset.areaCode
+      && item.label === location.dataset.locationLabel);
+    selectLocation(location.dataset.cityCode, location.dataset.areaCode, location.dataset.locationLabel, suggestion?.location);
     return;
   }
 
@@ -513,7 +585,9 @@ function handleDocumentClick(event) {
     const city = getCity(cityChoice.dataset.selectCity);
     const area = city?.areas.find(candidate => candidate.status === 'live' || candidate.status === 'beta')
       || city?.areas[0];
-    if (city) selectLocation(city.code, area?.code || '', city.name);
+    if (city) selectLocation(city.code, area?.code || '', city.name, city.locationCenterWgs84
+      ? { ...city.locationCenterWgs84, coordType: 'wgs84' }
+      : null);
     return;
   }
 
@@ -538,15 +612,19 @@ function handleDocumentClick(event) {
 
   const copy = event.target.closest('[data-copy-address]');
   if (copy) {
-    const item = restaurants.find(restaurant => restaurant.id === copy.dataset.copyAddress);
-    navigator.clipboard?.writeText(`${item.name} ${item.address}`).then(() => showToast('地址已复制')).catch(() => showToast('复制失败，请手动复制'));
+    const item = restaurantRepository.getCachedRestaurant(copy.dataset.copyAddress);
+    if (!item) return showToast('餐厅信息暂不可用');
+    if (!navigator.clipboard?.writeText) return showToast('当前浏览器不支持自动复制');
+    navigator.clipboard.writeText(`${item.name} ${item.address}`).then(() => showToast('地址已复制')).catch(() => showToast('复制失败，请手动复制'));
     return;
   }
 
   const map = event.target.closest('[data-open-map]');
   if (map) {
-    const item = restaurants.find(restaurant => restaurant.id === map.dataset.openMap);
-    const url = `https://uri.amap.com/marker?position=${item.longitude},${item.latitude}&name=${encodeURIComponent(item.name)}&src=solo-meal&coordinate=gaode&callnative=0`;
+    const item = restaurantRepository.getCachedRestaurant(map.dataset.openMap);
+    if (!item || !Number.isFinite(item.longitude) || !Number.isFinite(item.latitude)) return showToast('餐厅坐标暂不可用');
+    const coordinate = item.mapCoordType === 'wgs84' ? 'wgs84' : 'gaode';
+    const url = `https://uri.amap.com/marker?position=${item.longitude},${item.latitude}&name=${encodeURIComponent(item.name)}&src=solo-meal&coordinate=${coordinate}&callnative=0`;
     window.open(url, '_blank', 'noopener,noreferrer');
     return;
   }

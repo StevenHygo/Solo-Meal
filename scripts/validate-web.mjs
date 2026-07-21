@@ -12,7 +12,7 @@ function assert(condition, message) {
   else errors.push(message);
 }
 
-for (const file of ['index.html', 'styles.css', 'app.js', 'config.js', 'data.js', '.nojekyll']) {
+for (const file of ['index.html', 'styles.css', 'app.js', 'config.js', 'data.js', 'services/api-client.js', 'services/restaurant-repository.js', '.nojekyll']) {
   assert(fs.existsSync(path.join(webRoot, file)), `web/${file} exists`);
 }
 
@@ -21,38 +21,66 @@ const css = fs.readFileSync(path.join(webRoot, 'styles.css'), 'utf8');
 const app = fs.readFileSync(path.join(webRoot, 'app.js'), 'utf8');
 const config = fs.readFileSync(path.join(webRoot, 'config.js'), 'utf8');
 const data = fs.readFileSync(path.join(webRoot, 'data.js'), 'utf8');
+const apiClient = fs.readFileSync(path.join(webRoot, 'services', 'api-client.js'), 'utf8');
+const restaurantRepository = fs.readFileSync(path.join(webRoot, 'services', 'restaurant-repository.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
+function stripModuleSyntax(source) {
+  return source
+    .replace(/^import[\s\S]*?\bfrom\s+['"][^'"]+['"];\s*/gm, '')
+    .replace(/^export\s+/gm, '');
+}
 
 assert(html.includes('type="module" src="./app.js"'), 'HTML loads the module entry');
 assert(html.includes('href="./styles.css"'), 'HTML loads relative GitHub Pages CSS');
 assert(html.includes('href="./assets/cuisine/rice-meal.svg"'), 'HTML uses a local SVG favicon');
-assert(app.includes("from './data.js'"), 'app imports data with a relative URL');
 assert(app.includes("from './config.js'"), 'app imports v1 config with a relative URL');
-assert(!/(openai|anthropic|llm-gateway|xiaohongshu|douyin|wechat|wx\.)/i.test(app + data), 'web runtime has no social, LLM, or WeChat dependency');
+assert(app.includes("from './services/restaurant-repository.js'"), 'app imports the repository with a relative URL');
+assert(!app.includes("from './data.js'"), 'app does not bypass the repository to read fixture data');
+assert(restaurantRepository.includes("from '../data.js'"), 'repository owns the static fixture adapter');
+assert(restaurantRepository.includes("from './api-client.js'"), 'repository owns the API adapter');
+assert(!/(openai|anthropic|llm-gateway|xiaohongshu|douyin|wechat|wx\.)/i.test(app + data + apiClient + restaurantRepository), 'web runtime has no social, LLM, or WeChat dependency');
 assert(!/https?:\/\//.test(html + css), 'HTML and CSS do not depend on external assets');
 assert(html.includes('SOLO MEAL / V1 BETA'), 'HTML identifies the v1 Beta');
 assert(packageJson.version === '1.0.0-beta.1', 'package version matches the v1 Beta release');
+assert(/defaultMode:\s*'static'/.test(config), 'static data remains the default during migration');
+assert(apiClient.includes("query.get('dataSource') === 'api'"), 'API mode requires an explicit runtime flag');
+assert(restaurantRepository.includes('item.legacy_id || item.id'), 'API records preserve legacy restaurant IDs when available');
+assert(restaurantRepository.includes("source: 'fallback'"), 'repository exposes static fallback metadata');
+assert(restaurantRepository.includes("source: 'cache'"), 'repository exposes last-result cache metadata');
+assert(restaurantRepository.includes('successfulSearches.get(cacheKey)'), 'API cache is scoped to the current query');
+assert(app.includes("coordType: 'wgs84'"), 'browser geolocation is labeled as WGS84');
+assert(app.includes('restaurantRepository.getCachedRestaurant'), 'local workflows read through the repository cache');
+assert(app.includes('formatCacheTime(state.dataSource.cachedAt)'), 'cached results expose their successful query time');
 
 try {
-  const appWithoutImports = app.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];\s*/gm, '');
-  new vm.Script(`const restaurants = [];\nconst WEB_VERSION = '';\nconst cities = [];\nconst coverageStatus = {};\nconst cuisineCategories = [];\nconst getCity = () => {};\nconst getCoverageArea = () => {};\nconst getCuisine = () => ({ icon: '', label: '' });\nconst locationSuggestions = [];\n${appWithoutImports}`, { filename: 'web/app.js' });
+  new vm.Script(stripModuleSyntax(app), { filename: 'web/app.js' });
   checks.push('web/app.js parses');
 } catch (error) {
   errors.push(`web/app.js syntax error: ${error.message}`);
 }
 
 try {
-  new vm.Script(config.replaceAll('export ', ''), { filename: 'web/config.js' });
+  new vm.Script(stripModuleSyntax(config), { filename: 'web/config.js' });
   checks.push('web/config.js parses');
 } catch (error) {
   errors.push(`web/config.js syntax error: ${error.message}`);
 }
 
 try {
-  new vm.Script(data.replace(/^export\s+/, ''), { filename: 'web/data.js' });
+  new vm.Script(stripModuleSyntax(data), { filename: 'web/data.js' });
   checks.push('web/data.js parses');
 } catch (error) {
   errors.push(`web/data.js syntax error: ${error.message}`);
+}
+
+for (const [filename, source] of [['web/services/api-client.js', apiClient], ['web/services/restaurant-repository.js', restaurantRepository]]) {
+  try {
+    new vm.Script(stripModuleSyntax(source), { filename });
+    checks.push(`${filename} parses`);
+  } catch (error) {
+    errors.push(`${filename} syntax error: ${error.message}`);
+  }
 }
 
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -66,7 +94,7 @@ const closeBraces = (css.match(/}/g) || []).length;
 assert(openBraces === closeBraces, 'CSS braces are balanced');
 
 const requiredFeatures = ['searchRestaurants', 'renderResults', 'renderMap', 'renderCoverageState', 'renderLocationSuggestions', 'selectLocation', 'openDetail', 'renderFavorites', 'submitReport', 'requestLocation'];
-for (const feature of requiredFeatures) assert(new RegExp(`function ${feature}\\(`).test(app), `${feature} is implemented`);
+for (const feature of requiredFeatures) assert(new RegExp(`(?:async\\s+)?function ${feature}\\(`).test(app), `${feature} is implemented`);
 
 const records = (data.match(/\bid:\s*'r\d+'/g) || []).length;
 assert(records >= 6, 'web data includes at least six restaurants');

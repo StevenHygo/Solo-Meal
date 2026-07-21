@@ -1,0 +1,7 @@
+packages:
+  - server
+
+allowBuilds:
+  esbuild: true
+
+confirmModulesPurge: false

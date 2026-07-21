@@ -1,6 +1,6 @@
 # 一人食 Web v1 Beta
 
-一个帮助独自用餐者找到合适餐厅的 Web Beta。v1 在保留 v0 找店体验的基础上，加入配置驱动的食物品类、区域级覆盖状态和多城市扩展框架。当前仍可作为静态站点部署到 GitHub Pages。
+一个帮助独自用餐者找到合适餐厅的 Web Beta。v1 在保留 v0 找店体验的基础上，加入配置驱动的食物品类、区域级覆盖状态、PostgreSQL/PostGIS 数据模型和只读搜索 API。前端默认仍使用版本化静态快照，可继续部署到 GitHub Pages；API 通过显式功能开关联调。
 
 ## 网页功能
 
@@ -14,6 +14,7 @@
 - 餐厅详情、复制地址及高德地图导航；
 - 浏览器本机私有收藏；
 - 受限纠错，数据仅保存在本机；
+- 静态快照、API 实时查询、同查询缓存和故障降级状态；
 - 桌面和移动端响应式布局。
 
 ## 本地运行
@@ -26,15 +27,44 @@ python3 -m http.server 4173 -d web
 
 然后访问 [http://localhost:4173](http://localhost:4173)。
 
-## 校验
+### 联调只读 API
 
-项目无第三方运行时依赖：
+需要 Node.js 20+ 与 pnpm 11：
 
 ```bash
-node scripts/validate-web.mjs
+pnpm install
+API_DATA_SOURCE=fixture pnpm api:dev
 ```
 
-校验覆盖静态资源、JavaScript 语法、HTML ID 契约、CSS 结构、功能入口、演示数据、16 类图标安全与配置一致性，以及网页运行时不包含社交、LLM 或微信依赖。
+fixture API 默认监听 `http://127.0.0.1:8787`。保持静态服务器同时运行，然后访问：
+
+```text
+http://127.0.0.1:4173/?dataSource=api
+```
+
+`dataSource=api` 只用于显式联调。API 不可用时，前端优先保留同一查询的上次成功结果；没有匹配缓存时回退到随版本发布的静态快照。不会把上一城市的缓存用于当前区域。
+
+### 使用 PostgreSQL/PostGIS
+
+```bash
+docker compose up -d postgres
+cp .env.example .env
+pnpm db:migrate
+pnpm db:seed
+pnpm api:dev
+```
+
+生产和默认 API 配置使用 `postgres`；`fixture` 必须显式选择，不能作为生产数据源静默启用。
+
+## 校验
+
+安装依赖后运行全量校验：
+
+```bash
+pnpm validate
+```
+
+校验覆盖 Web 静态资源和双数据源契约、小程序回归、TypeScript 类型、API schema、稳定错误码、坐标转换、营业时间、迁移回滚、排序/分页，以及浏览器、服务端品类和覆盖配置一致性。
 
 ## 部署到 GitHub Pages
 
@@ -59,9 +89,9 @@ git push -u origin main
 
 ## 数据与隐私
 
-- 演示餐厅位于 [`web/data.js`](./web/data.js)，不会请求第三方评价内容。
+- 静态降级餐厅位于 [`web/data.js`](./web/data.js)；fixture API 使用同一批兼容数据，不会请求第三方评价内容。
 - 收藏、预算和纠错保存在浏览器 `localStorage` 中，不会上传。
-- 浏览器定位只在用户主动点击后申请；v1 Beta 不保存精确坐标或轨迹。
+- 浏览器定位只在用户主动点击后申请；API 模式会把本次坐标和坐标类型发送到配置的“一人食”API，但前端不保存精确坐标或轨迹。
 - “地图导航”会在新窗口打开高德 URI 页面；这是唯一由用户主动触发的外部跳转。
 
 ## 项目结构
@@ -73,8 +103,14 @@ web/
   app.js                  # 搜索、筛选、收藏、纠错和状态管理
   config.js               # v1 品类、城市和覆盖区域配置
   data.js                 # 带 v1 code 的 v0 兼容 fixture
+  services/               # 静态/API 仓储适配和 HTTP 客户端
   assets/cuisine/         # 16 个 SVG 品类图标
   .nojekyll               # GitHub Pages 静态发布
+server/
+  migrations/             # PostgreSQL/PostGIS 前进与回滚迁移
+  src/                    # 模块化 API、仓储、排序、营业和坐标逻辑
+  test/                   # API、迁移、坐标、营业与兼容测试
+compose.yaml              # 本地 PostGIS 16 开发服务
 .github/workflows/
   pages.yml               # GitHub Pages 自动部署
 docs/
@@ -99,4 +135,4 @@ scripts/
 
 ## 当前边界
 
-当前 `1.0.0-beta.1` 完成 v1 阶段 A，主数据仍是静态 fixture，不是生产数据平台。正式扩大使用前仍需完成阶段 B/C 的 PostgreSQL/PostGIS、真实 POI 接入、运营核验后台、服务端限流和审计，并完成网站主体、隐私政策和地图服务条款评审。
+当前 `1.0.0-beta.1` 已完成阶段 A，并完成阶段 B 的 schema、迁移、种子、只读 API 与前端双数据源代码；fixture 模式和故障降级已验证。由于本机没有 Docker/`psql`，真实 PostGIS 的迁移、种子、空间索引与回滚执行仍需在可用环境演练。正式扩大使用前还需完成真实 POI 接入、运营核验后台、服务端纠错闭环、备份恢复与合规评审。

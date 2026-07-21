@@ -1,0 +1,23 @@
+DROP TABLE IF EXISTS outbox_events;
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS ranking_configs;
+DROP TABLE IF EXISTS curation_tasks;
+DROP TABLE IF EXISTS feedback_reports;
+DROP TABLE IF EXISTS evidence;
+DROP TABLE IF EXISTS solo_profiles;
+DROP TABLE IF EXISTS restaurant_hours;
+DROP TABLE IF EXISTS restaurant_provider_refs;
+DROP TABLE IF EXISTS restaurant_cuisines;
+DROP TABLE IF EXISTS restaurants;
+DROP TABLE IF EXISTS location_aliases;
+DROP TABLE IF EXISTS cuisine_categories;
+DROP TABLE IF EXISTS coverage_areas;
+DROP TABLE IF EXISTS cities;
+
+DROP TYPE IF EXISTS curation_task_status;
+DROP TYPE IF EXISTS feedback_status;
+DROP TYPE IF EXISTS evidence_status;
+DROP TYPE IF EXISTS confidence_level;
+DROP TYPE IF EXISTS restaurant_publish_status;
+DROP TYPE IF EXISTS coordinate_type;
+DROP TYPE IF EXISTS coverage_state;

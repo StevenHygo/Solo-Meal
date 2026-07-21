@@ -1,5 +1,12 @@
 export const WEB_VERSION = '1.0.0-beta.1';
 
+export const dataSourceConfig = {
+  defaultMode: 'static',
+  apiBaseUrl: '',
+  timeoutMs: 2500,
+  snapshotVersion: 'v1-beta.1'
+};
+
 export const coverageStatus = {
   live: { label: '已覆盖', description: '已达到公开区域的数据质量门槛' },
   beta: { label: 'Beta', description: '可搜索，数据仍在持续补充' },
@@ -74,14 +81,14 @@ export const cities = [
 ];
 
 export const locationSuggestions = [
-  { label: '静安寺', detail: '上海 · 地铁 2/7/14 号线', cityCode: 'shanghai', areaCode: 'sh-jingan-huangpu', status: 'beta' },
-  { label: '南京西路', detail: '上海 · 静安 / 黄浦覆盖区', cityCode: 'shanghai', areaCode: 'sh-jingan-huangpu', status: 'beta' },
-  { label: '徐家汇', detail: '上海 · 数据核验中', cityCode: 'shanghai', areaCode: 'sh-xujiahui', status: 'upcoming' },
-  { label: '淮海中路', detail: '上海 · 数据核验中', cityCode: 'shanghai', areaCode: 'sh-huaihai', status: 'upcoming' },
-  { label: '陆家嘴', detail: '上海 · 暂停新增推荐', cityCode: 'shanghai', areaCode: 'sh-lujiazui', status: 'paused' },
-  { label: '国贸', detail: '北京 · 即将开放', cityCode: 'beijing', areaCode: 'bj-guomao', status: 'upcoming' },
-  { label: '福田中心区', detail: '深圳 · 即将开放', cityCode: 'shenzhen', areaCode: 'sz-futian', status: 'upcoming' },
-  { label: '杭州', detail: '暂未覆盖，可登记需求', cityCode: 'hangzhou', areaCode: null, status: 'unsupported' }
+  { label: '静安寺', detail: '上海 · 地铁 2/7/14 号线', cityCode: 'shanghai', areaCode: 'sh-jingan-huangpu', status: 'beta', location: { lat: 31.2231, lng: 121.4452, coordType: 'gcj02' } },
+  { label: '南京西路', detail: '上海 · 静安 / 黄浦覆盖区', cityCode: 'shanghai', areaCode: 'sh-jingan-huangpu', status: 'beta', location: { lat: 31.2298, lng: 121.4589, coordType: 'gcj02' } },
+  { label: '徐家汇', detail: '上海 · 数据核验中', cityCode: 'shanghai', areaCode: 'sh-xujiahui', status: 'upcoming', location: { lat: 31.1838, lng: 121.4365, coordType: 'gcj02' } },
+  { label: '淮海中路', detail: '上海 · 数据核验中', cityCode: 'shanghai', areaCode: 'sh-huaihai', status: 'upcoming', location: { lat: 31.2206, lng: 121.4707, coordType: 'gcj02' } },
+  { label: '陆家嘴', detail: '上海 · 暂停新增推荐', cityCode: 'shanghai', areaCode: 'sh-lujiazui', status: 'paused', location: { lat: 31.2382, lng: 121.4997, coordType: 'gcj02' } },
+  { label: '国贸', detail: '北京 · 即将开放', cityCode: 'beijing', areaCode: 'bj-guomao', status: 'upcoming', location: { lat: 39.9087, lng: 116.4600, coordType: 'gcj02' } },
+  { label: '福田中心区', detail: '深圳 · 即将开放', cityCode: 'shenzhen', areaCode: 'sz-futian', status: 'upcoming', location: { lat: 22.5410, lng: 114.0590, coordType: 'gcj02' } },
+  { label: '杭州', detail: '暂未覆盖，可登记需求', cityCode: 'hangzhou', areaCode: null, status: 'unsupported', location: { lat: 30.2741, lng: 120.1551, coordType: 'wgs84' } }
 ];
 
 export function getCuisine(code) {

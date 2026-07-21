@@ -3,9 +3,18 @@
   "version": "1.0.0-beta.1",
   "private": true,
   "description": "一人食 Web v1 多城市 Beta",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "validate": "node scripts/validate-web.mjs",
+    "validate": "pnpm run validate:web && pnpm run validate:miniprogram && pnpm --filter @solo-meal/api validate",
     "validate:web": "node scripts/validate-web.mjs",
-    "validate:miniprogram": "node scripts/validate.mjs"
+    "validate:miniprogram": "node scripts/validate.mjs",
+    "api:dev": "pnpm --filter @solo-meal/api dev",
+    "api:test": "pnpm --filter @solo-meal/api test",
+    "db:migrate": "pnpm --filter @solo-meal/api db:migrate",
+    "db:rollback": "pnpm --filter @solo-meal/api db:rollback",
+    "db:seed": "pnpm --filter @solo-meal/api db:seed"
   }
 }

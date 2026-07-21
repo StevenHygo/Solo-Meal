@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.5-alpine
+    environment:
+      POSTGRES_DB: solo_meal
+      POSTGRES_USER: solo_meal
+      POSTGRES_PASSWORD: solo_meal_dev
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - solo_meal_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solo_meal -d solo_meal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  solo_meal_postgres:

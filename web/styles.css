@@ -170,7 +170,14 @@ a { color: inherit; text-decoration: none; }
 .empty-state h3 { margin: 13px 0 0; font-size: 21px; }.empty-state p { max-width: 380px; margin: 9px auto 23px; color: var(--muted); font-size: 14px; line-height: 1.6; }
 .primary-button { min-height: 44px; padding: 0 18px; }.empty-state .primary-button { min-width: 150px; }
 .result-note { display: flex; align-items: flex-start; gap: 8px; margin: 19px 3px 0; color: #90988f; font-size: 12px; }
-.result-note span { display: grid; flex: 0 0 18px; place-items: center; width: 18px; height: 18px; border: 1px solid #a7afa6; border-radius: 50%; font-size: 11px; }
+.result-note > span:first-child { display: grid; flex: 0 0 18px; place-items: center; width: 18px; height: 18px; border: 1px solid #a7afa6; border-radius: 50%; font-size: 11px; }
+.result-note-copy { min-width: 0; }
+.data-source-status { margin-left: auto; color: #718078; font-size: 10px; font-weight: 700; white-space: nowrap; }
+
+.detail-loading { position: relative; display: grid; min-height: 260px; place-items: center; padding: 30px; color: var(--muted); font-size: 13px; }
+.detail-loading .detail-close { position: absolute; top: 14px; right: 14px; color: var(--ink); background: #fff; box-shadow: 0 4px 16px rgba(34, 48, 38, .12); }
+.detail-error > div { display: grid; justify-items: center; gap: 10px; text-align: center; }.detail-error strong { color: var(--ink); font-size: 16px; }.detail-error span { margin-bottom: 6px; }
+.favorites-loading { padding: 42px 20px; color: var(--muted); text-align: center; }.favorite-unavailable { color: var(--muted); }
 
 .cuisine-meta, .detail-cuisine { display: inline-flex; align-items: center; gap: 5px; }
 .cuisine-icon { display: inline-block; flex: 0 0 16px; width: 16px; height: 16px; background: currentColor; -webkit-mask: var(--cuisine-icon) center / contain no-repeat; mask: var(--cuisine-icon) center / contain no-repeat; }
