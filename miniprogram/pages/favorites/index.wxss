@@ -1,0 +1,139 @@
+.favorites-page {
+  padding-top: 48rpx;
+}
+
+.favorites-title {
+  margin-top: 10rpx;
+  color: #173b33;
+  font-size: 50rpx;
+  font-weight: 800;
+}
+
+.favorites-subtitle {
+  margin-top: 10rpx;
+  color: #8a918a;
+  font-size: 24rpx;
+}
+
+.favorite-list {
+  margin-top: 36rpx;
+}
+
+.favorite-card {
+  position: relative;
+  display: flex;
+  margin-bottom: 18rpx;
+  overflow: hidden;
+}
+
+.favorite-accent {
+  flex: 0 0 12rpx;
+  background: #efb973;
+}
+
+.favorite-content {
+  flex: 1;
+  min-width: 0;
+  padding: 24rpx;
+}
+
+.favorite-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.favorite-name {
+  color: #1c2825;
+  font-size: 31rpx;
+  font-weight: 800;
+}
+
+.favorite-meta {
+  margin-top: 8rpx;
+  color: #7e857e;
+  font-size: 22rpx;
+}
+
+.favorite-score {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 62rpx;
+  height: 62rpx;
+  border-radius: 50%;
+  background: #eaf3ee;
+  color: #176b5c;
+  font-size: 23rpx;
+  font-weight: 800;
+}
+
+.favorite-reason {
+  margin-top: 22rpx;
+  color: #52625a;
+  font-size: 23rpx;
+}
+
+.reason-dot {
+  margin-right: 10rpx;
+  color: #cf6747;
+  font-size: 13rpx;
+}
+
+.favorite-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 24rpx;
+  padding-top: 18rpx;
+  border-top: 1rpx solid #ece9df;
+  color: #929891;
+  font-size: 20rpx;
+}
+
+.remove-button {
+  color: #a26853;
+  font-size: 21rpx;
+}
+
+.favorite-empty {
+  margin-top: 40rpx;
+  padding: 66rpx 38rpx 40rpx;
+  text-align: center;
+}
+
+.empty-symbol {
+  color: #cf6747;
+  font-size: 80rpx;
+  line-height: 1;
+}
+
+.empty-title {
+  margin-top: 26rpx;
+  color: #1c2825;
+  font-size: 32rpx;
+  font-weight: 800;
+}
+
+.empty-copy {
+  margin: 16rpx 0 34rpx;
+  color: #838b84;
+  font-size: 23rpx;
+  line-height: 1.6;
+}
+
+.privacy-tip {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 28rpx;
+  padding: 20rpx;
+  background: #eaf3ee;
+  color: #5f7369;
+  font-size: 21rpx;
+  line-height: 1.5;
+}
+
+.privacy-tip text:first-child {
+  margin-right: 10rpx;
+  color: #176b5c;
+}
