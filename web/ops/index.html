@@ -108,9 +108,20 @@
       </div>
     </section>
 
+    <section class="coverage-band hidden" id="coverageBand" aria-labelledby="coverageTitle">
+      <div class="coverage-inner">
+        <div class="coverage-toolbar">
+          <div><p>COVERAGE CONTROL</p><h2 id="coverageTitle">城市与覆盖区域</h2></div>
+          <button class="secondary-button" id="closeCoverageButton" type="button">关闭</button>
+        </div>
+        <label class="coverage-reason"><span>本次操作说明</span><textarea id="coverageReasonInput" minlength="5" maxlength="500" rows="2" placeholder="说明暂停、恢复或开放的依据" required></textarea></label>
+        <div class="coverage-list" id="coverageList"><div class="queue-empty">连接后读取覆盖状态</div></div>
+      </div>
+    </section>
+
     <main class="workspace hidden" id="poiWorkspace">
       <aside class="queue-panel" aria-labelledby="poiQueueTitle">
-        <div class="panel-heading"><div><p>POI INBOX</p><h2 id="poiQueueTitle">候选队列 <span id="poiCount">0</span></h2></div><div class="panel-tools"><button class="secondary-button compact-button" id="openQualityButton" type="button">门槛</button><button class="secondary-button compact-button" id="openPoiImportButton" type="button">导入</button><button class="icon-button" id="refreshPoiButton" type="button" title="刷新候选" aria-label="刷新候选">↻</button></div></div>
+        <div class="panel-heading"><div><p>POI INBOX</p><h2 id="poiQueueTitle">候选队列 <span id="poiCount">0</span></h2></div><div class="panel-tools"><button class="secondary-button compact-button" id="openCoverageButton" type="button">覆盖</button><button class="secondary-button compact-button" id="openQualityButton" type="button">门槛</button><button class="secondary-button compact-button" id="openPoiImportButton" type="button">导入</button><button class="icon-button" id="refreshPoiButton" type="button" title="刷新候选" aria-label="刷新候选">↻</button></div></div>
         <div class="status-tabs" id="poiStatusTabs" role="tablist" aria-label="POI 候选状态">
           <button class="active" data-poi-status="pending" role="tab" aria-selected="true" type="button">待去重</button>
           <button data-poi-status="new_branch" role="tab" aria-selected="false" type="button">新分店</button>
@@ -261,6 +272,17 @@
             <button class="secondary-button" type="submit">筛选</button>
           </form>
           <div class="audit-list" id="auditList"><div class="queue-empty">连接后读取审计日志</div></div>
+        </section>
+
+        <section class="operations-control expiry-control" aria-labelledby="expiryTitle">
+          <div class="operations-heading"><div><p>FRESHNESS WATCH</p><h2 id="expiryTitle">证据即将过期 <span id="expiringEvidenceCount">0</span></h2></div></div>
+          <form class="expiry-filter" id="expiryFilterForm">
+            <label><span>未来天数</span><input id="expiryDaysInput" type="number" min="1" max="365" value="30" required></label>
+            <label><span>覆盖区域 ID</span><input id="expiryCoverageInput" type="text" maxlength="80"></label>
+            <label><span>核验属性</span><select id="expiryAttributeInput"><option value="">全部属性</option><option value="accepts_solo">单人接待</option><option value="seating">座位情况</option><option value="ordering">点餐规则</option><option value="minimum_spend">最低消费</option><option value="solo_portion">单人份</option><option value="meal_speed">用餐速度</option><option value="hours">营业时间</option><option value="location">位置</option><option value="noise">氛围</option></select></label>
+            <button class="secondary-button" type="submit">查询</button>
+          </form>
+          <div class="expiry-list" id="expiringEvidenceList"><div class="queue-empty">连接后读取即将过期证据</div></div>
         </section>
 
         <section class="operations-control export-control" aria-labelledby="exportTitle">

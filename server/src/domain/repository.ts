@@ -13,6 +13,12 @@ import type {
   OutboxEventRecord,
   OutboxFailure
 } from './operations-control.js';
+import type {
+  CoverageStatusUpdate,
+  ExpiringEvidenceQuery,
+  ExpiringEvidenceRecord,
+  ManagedCoverageCity
+} from './coverage-operations.js';
 
 export interface RestaurantHours extends HoursInterval {
   dayOfWeek: number | null;
@@ -97,6 +103,10 @@ export interface RestaurantRepository {
   transitionManagedRestaurant(id: string, transition: RestaurantPublicationTransition): Promise<ManagedRestaurantRecord>;
   getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord>;
   updateCoverageQuality(areaId: string, update: CoverageQualityManualUpdate): Promise<CoverageQualityRecord>;
+  listManagedCoverage(): Promise<ManagedCoverageCity[]>;
+  updateCityStatus(code: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity>;
+  updateCoverageAreaStatus(id: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity>;
+  listExpiringEvidence(query: ExpiringEvidenceQuery): Promise<ExpiringEvidenceRecord[]>;
   listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]>;
   listOutboxEvents(query: OutboxEventQuery): Promise<OutboxEventRecord[]>;
   claimOutboxEvents(claim: OutboxClaim): Promise<OutboxEventRecord[]>;

@@ -12,7 +12,20 @@ import { searchRequestSchema, searchRestaurants } from './services/search.js';
 import { feedbackPriority, feedbackRequestSchema } from './services/feedback.js';
 import { curationTaskParamsSchema, curationTaskQuerySchema, curationTaskUpdateSchema, toCurationTaskDto } from './services/curation.js';
 import { poiCandidateParamsSchema, poiCandidateQuerySchema, poiCandidateReviewSchema, poiImportRequestSchema, preparePoiImport, toPoiCandidateDto } from './services/poi.js';
-import { coverageQualityUpdateSchema, toCoverageQualityDto } from './services/coverage-quality.js';
+import {
+  coverageQualityUpdateSchema,
+  evaluateBetaGate,
+  evaluateLiveGate,
+  toCoverageQualityDto
+} from './services/coverage-quality.js';
+import {
+  cityCoverageParamsSchema,
+  coverageAreaParamsSchema,
+  coverageStatusUpdateSchema,
+  expiringEvidenceQuerySchema,
+  toExpiringEvidenceDto,
+  toManagedCoverageDto
+} from './services/coverage-operations.js';
 import {
   managedRestaurantParamsSchema,
   managedRestaurantQuerySchema,
@@ -108,6 +121,8 @@ export async function createApp({ config, repository, clock = () => new Date() }
       INVALID_PUBLICATION_TRANSITION: { status: 409, message: '餐厅发布状态不能这样变更' },
       SECOND_REVIEWER_REQUIRED: { status: 409, message: '发布必须由提交审核之外的操作人完成' },
       PUBLISHING_REQUIREMENTS_NOT_MET: { status: 422, message: '核心单人字段或有效证据不满足发布要求' },
+      CITY_NOT_FOUND: { status: 404, message: '城市不存在' },
+      COVERAGE_GATE_NOT_MET: { status: 422, message: '覆盖区域尚未达到目标状态的质量门槛' },
       SOURCE_CANDIDATE_REQUIRED: { status: 409, message: '餐厅缺少可追溯的来源候选' },
       INVALID_EVIDENCE_TIME: { status: 400, message: '证据观察时间不能晚于当前时间' },
       OUTBOX_EVENT_NOT_FOUND: { status: 404, message: '投递事件不存在' },
@@ -230,6 +245,22 @@ export async function createApp({ config, repository, clock = () => new Date() }
         created_tasks: result.createdTasks,
         processed_at: result.processedAt
       }
+    };
+  });
+
+  app.get('/api/v1/admin/evidence/expiring', { preHandler: requireAdmin }, async request => {
+    const query = expiringEvidenceQuerySchema.parse(request.query);
+    const evidence = await repository.listExpiringEvidence({
+      withinDays: query.within_days,
+      coverageAreaId: query.coverage_area_id ?? null,
+      attribute: query.attribute ?? null,
+      limit: query.limit,
+      at: clock()
+    });
+    return {
+      request_id: request.id,
+      window_days: query.within_days,
+      evidence: evidence.map(toExpiringEvidenceDto)
     };
   });
 
@@ -356,6 +387,45 @@ export async function createApp({ config, repository, clock = () => new Date() }
       updatedAt: clock()
     });
     return { request_id: request.id, quality: toCoverageQualityDto(quality) };
+  });
+
+  app.get('/api/v1/admin/coverage', { preHandler: requireAdmin }, async request => ({
+    request_id: request.id,
+    cities: toManagedCoverageDto(await repository.listManagedCoverage())
+  }));
+
+  app.patch('/api/v1/admin/cities/:code/status', { preHandler: requireAdmin }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { code } = cityCoverageParamsSchema.parse(request.params);
+    const input = coverageStatusUpdateSchema.parse(request.body);
+    const city = await repository.updateCityStatus(code, {
+      status: input.status,
+      reason: input.reason,
+      actorId,
+      updatedAt: clock()
+    });
+    return { request_id: request.id, city: toManagedCoverageDto([city])[0] };
+  });
+
+  app.patch('/api/v1/admin/coverage/:id/status', { preHandler: requireAdmin }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = coverageAreaParamsSchema.parse(request.params);
+    const input = coverageStatusUpdateSchema.parse(request.body);
+    const managed = await repository.listManagedCoverage();
+    const area = managed.flatMap(city => city.areas).find(candidate => candidate.id === id);
+    if (!area) throw new Error('COVERAGE_AREA_NOT_FOUND');
+    if (area.configuredStatus !== input.status && (input.status === 'beta' || input.status === 'live')) {
+      const quality = await repository.getCoverageQuality(id, clock());
+      const gate = input.status === 'beta' ? evaluateBetaGate(quality) : evaluateLiveGate(quality);
+      if (!gate.eligible) throw new Error('COVERAGE_GATE_NOT_MET');
+    }
+    const city = await repository.updateCoverageAreaStatus(id, {
+      status: input.status,
+      reason: input.reason,
+      actorId,
+      updatedAt: clock()
+    });
+    return { request_id: request.id, city: toManagedCoverageDto([city])[0] };
   });
 
   app.get('/api/v1/admin/audit-logs', { preHandler: requireAdmin }, async request => {

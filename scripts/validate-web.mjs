@@ -110,6 +110,10 @@ assert(opsApp.includes("parsedUrl.protocol !== 'https:'"), 'operator API rejects
 assert(opsApp.includes("'/api/v1/admin/poi/imports'"), 'operator workbench imports authorized POI candidates');
 assert(opsApp.includes('/api/v1/admin/poi/candidates'), 'operator workbench reads and reviews POI candidates');
 assert(opsApp.includes('/api/v1/admin/coverage/'), 'operator workbench reads coverage quality gates');
+assert(opsApp.includes("request('/api/v1/admin/coverage')"), 'operator workbench reads managed city and area states');
+assert(opsApp.includes('/api/v1/admin/cities/${encodeURIComponent(id)}/status'), 'operator workbench updates city coverage states');
+assert(opsApp.includes('/api/v1/admin/coverage/${encodeURIComponent(id)}/status'), 'operator workbench updates area coverage states');
+assert(opsApp.includes('/api/v1/admin/evidence/expiring?'), 'operator workbench reads evidence freshness warnings');
 assert(opsApp.includes('/api/v1/admin/restaurants?status='), 'operator workbench reads restaurant publication queues');
 assert(opsApp.includes('/api/v1/admin/poi/candidates/${encodeURIComponent(state.draftCandidate.id)}/draft'), 'operator workbench creates drafts from new branch candidates');
 assert(opsApp.includes("method: creating ? 'POST' : 'PUT'"), 'operator workbench creates and updates normalized drafts');
@@ -123,11 +127,16 @@ assert(!/data-poi-action="publish"/.test(opsHtml + opsApp), 'POI candidate workf
 assert(opsHtml.includes('data-mode="restaurants"'), 'operator workbench has a restaurant publication mode');
 assert(opsHtml.includes('id="restaurantDraftForm"'), 'operator workbench provides a structured restaurant draft form');
 assert(opsHtml.includes('data-mode="operations"'), 'operator workbench has an audit and delivery mode');
+assert(opsHtml.includes('id="coverageBand"'), 'operator workbench provides city and area coverage controls');
+assert(opsHtml.includes('id="coverageReasonInput"'), 'coverage status changes require an operator reason');
+assert(opsHtml.includes('id="expiryFilterForm"'), 'operator workbench provides evidence expiry filters');
 assert(opsApp.includes('/api/v1/admin/outbox-events?status='), 'operator workbench reads outbox delivery queues');
 assert(opsApp.includes('/api/v1/admin/audit-logs?'), 'operator workbench filters audit logs');
 assert(opsApp.includes('/retry'), 'operator workbench retries failed outbox events');
 assert(opsApp.includes('/api/v1/admin/exports/'), 'operator workbench downloads controlled CSV exports');
 assert(opsCss.includes('@media (max-width: 560px)') && opsCss.includes('.compact-grid'), 'operator draft form has a mobile layout contract');
+assert(opsCss.includes('.coverage-row { grid-template-columns: minmax(0, 1fr) 96px;'), 'coverage controls collapse for narrow mobile screens');
+assert(opsCss.includes('.audit-row, .expiry-row { grid-template-columns: 64px minmax(0, 1fr);'), 'evidence expiry rows collapse for narrow mobile screens');
 
 const opsIds = [...opsHtml.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert(new Set(opsIds).size === opsIds.length, 'operator HTML IDs are unique');

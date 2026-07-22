@@ -321,6 +321,105 @@ test('evidence sweep is protected, idempotent and creates one task per restauran
   }
 });
 
+test('coverage operations preserve configured area states and immediately affect public search', async () => {
+  const repository = new FixtureRepository();
+  const app = await createApp({ config, repository, clock: fixedNow });
+  const headers = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.coverage'
+  };
+  try {
+    const initial = await app.inject({ method: 'GET', url: '/api/v1/admin/coverage', headers });
+    assert.equal(initial.statusCode, 200);
+    const initialArea = initial.json().cities.find((city: { code: string }) => city.code === 'shanghai')
+      .areas.find((area: { id: string }) => area.id === 'sh-jingan-huangpu');
+    assert.equal(initialArea.configured_status, 'beta');
+    assert.equal(initialArea.effective_status, 'beta');
+
+    const paused = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/cities/shanghai/status', headers,
+      payload: { status: 'paused', reason: '临时暂停公开推荐进行覆盖质量复核' }
+    });
+    assert.equal(paused.statusCode, 200, paused.body);
+    const pausedArea = paused.json().city.areas.find((area: { id: string }) => area.id === 'sh-jingan-huangpu');
+    assert.equal(pausedArea.configured_status, 'beta');
+    assert.equal(pausedArea.effective_status, 'paused');
+
+    const search = await app.inject({ method: 'POST', url: '/api/v1/restaurants/search', payload: searchPayload() });
+    assert.equal(search.statusCode, 200);
+    assert.equal(search.json().coverage_status, 'paused');
+    assert.deepEqual(search.json().results, []);
+
+    const publicCities = await app.inject({ method: 'GET', url: '/api/v1/cities' });
+    const publicArea = publicCities.json().cities.find((city: { code: string }) => city.code === 'shanghai')
+      .areas.find((area: { id: string }) => area.id === 'sh-jingan-huangpu');
+    assert.equal(publicArea.status, 'paused');
+
+    const restored = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/cities/shanghai/status', headers,
+      payload: { status: 'beta', reason: '质量复核完成并恢复原有区域状态' }
+    });
+    assert.equal(restored.statusCode, 200);
+    assert.equal(restored.json().city.areas.find((area: { id: string }) => area.id === 'sh-jingan-huangpu').effective_status, 'beta');
+
+    const audit = await app.inject({
+      method: 'GET', url: '/api/v1/admin/audit-logs?action=update_status&entity_type=city', headers
+    });
+    assert.equal(audit.json().audit_logs.length, 2);
+    const outbox = await app.inject({
+      method: 'GET', url: '/api/v1/admin/outbox-events?status=pending&topic=coverage.city_status_updated', headers
+    });
+    assert.equal(outbox.json().outbox_events.length, 2);
+  } finally {
+    await app.close();
+  }
+});
+
+test('coverage area promotion requires its versioned quality gate', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  const headers = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.coverage'
+  };
+  try {
+    const rejected = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/coverage/sh-xujiahui/status', headers,
+      payload: { status: 'beta', reason: '尝试开放徐家汇覆盖区域' }
+    });
+    assert.equal(rejected.statusCode, 422);
+    assert.equal(rejected.json().error.code, 'COVERAGE_GATE_NOT_MET');
+
+    const coverage = await app.inject({ method: 'GET', url: '/api/v1/admin/coverage', headers });
+    const area = coverage.json().cities.find((city: { code: string }) => city.code === 'shanghai')
+      .areas.find((candidate: { id: string }) => candidate.id === 'sh-xujiahui');
+    assert.equal(area.configured_status, 'upcoming');
+  } finally {
+    await app.close();
+  }
+});
+
+test('expiring evidence endpoint supports window and attribute filters', async () => {
+  const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
+  const headers = { authorization: `Bearer ${config.adminApiToken}` };
+  try {
+    const unauthorized = await app.inject({ method: 'GET', url: '/api/v1/admin/evidence/expiring' });
+    assert.equal(unauthorized.statusCode, 401);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/evidence/expiring?within_days=30&coverage_area_id=sh-jingan-huangpu&attribute=ordering',
+      headers
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().window_days, 30);
+    assert.equal(response.json().evidence.length, 1);
+    assert.equal(response.json().evidence[0].restaurant.legacy_id, 'r006');
+    assert.equal(response.json().evidence[0].expires_in_days, 30);
+  } finally {
+    await app.close();
+  }
+});
+
 test('POI import requires operator authorization and source authorization metadata', async () => {
   const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
   const payload = {

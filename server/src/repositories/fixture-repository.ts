@@ -16,12 +16,19 @@ import type {
   OutboxEventRecord,
   OutboxFailure
 } from '../domain/operations-control.js';
+import type {
+  CoverageStatusUpdate,
+  ExpiringEvidenceQuery,
+  ExpiringEvidenceRecord,
+  ManagedCoverageCity
+} from '../domain/coverage-operations.js';
 import type { City, Coordinate, CoverageArea, LocationSuggestion, RestaurantFixture } from '../domain/types.js';
 import { v0Restaurants } from '../fixtures/v0-restaurants.js';
 import { normalizeToWgs84 } from '../geo/coordinates.js';
 import { addBusinessDays, assertTaskClaim, assertTaskTransition } from '../services/curation.js';
 import { assertPoiCandidateTransition } from '../services/poi.js';
 import { deriveSoloProfile, nextPublicationStatus } from '../services/publishing.js';
+import { effectiveCoverageStatus } from '../services/coverage-operations.js';
 
 function distanceMeters(left: Coordinate, right: Coordinate): number {
   const radians = (degrees: number) => degrees * Math.PI / 180;
@@ -110,6 +117,7 @@ export class FixtureRepository implements RestaurantRepository {
   private readonly poiCandidateIdByProviderRef = new Map<string, string>();
   private readonly providerRefs = new Map<string, string>();
   private readonly manualCoverageQuality = new Map<string, Partial<CoverageQualityRecord['metrics']>>();
+  private readonly managedCoverage = structuredClone(cities);
   private readonly managedRestaurants = new Map<string, ManagedRestaurantRecord>();
   private readonly auditLogs: AuditLogRecord[] = [];
   private readonly outboxEvents = new Map<string, OutboxEventRecord>();
@@ -163,13 +171,24 @@ export class FixtureRepository implements RestaurantRepository {
   }
 
   async listCities(): Promise<City[]> {
-    return structuredClone(cities);
+    return this.managedCoverage.map(city => ({
+      ...structuredClone(city),
+      areas: city.areas.map(area => ({
+        ...structuredClone(area),
+        status: effectiveCoverageStatus(city.status, area.status)
+      }))
+    }));
   }
 
   async getCoverageArea(id: string): Promise<(CoverageArea & { cityCode: string; cityTimezone: string }) | null> {
-    for (const city of cities) {
+    for (const city of this.managedCoverage) {
       const area = city.areas.find(item => item.id === id);
-      if (area) return { ...area, cityCode: city.code, cityTimezone: city.timezone };
+      if (area) return {
+        ...area,
+        status: effectiveCoverageStatus(city.status, area.status),
+        cityCode: city.code,
+        cityTimezone: city.timezone
+      };
     }
     return null;
   }
@@ -177,9 +196,18 @@ export class FixtureRepository implements RestaurantRepository {
   async suggestLocations(query: string, limit: number): Promise<LocationSuggestion[]> {
     const normalized = query.trim().toLowerCase();
     return locationSuggestions.filter(item => {
-      const city = cities.find(candidate => candidate.code === item.cityCode);
+      const city = this.managedCoverage.find(candidate => candidate.code === item.cityCode);
       return !normalized || `${item.label} ${item.detail} ${city?.name ?? ''}`.toLowerCase().includes(normalized);
-    }).slice(0, limit).map(item => ({ ...item }));
+    }).slice(0, limit).map(item => {
+      const city = this.managedCoverage.find(candidate => candidate.code === item.cityCode);
+      const area = city?.areas.find(candidate => candidate.id === item.areaId);
+      return {
+        ...item,
+        status: city && area
+          ? effectiveCoverageStatus(city.status, area.status)
+          : city?.status ?? item.status
+      };
+    });
   }
 
   async findCandidates(query: CandidateQuery): Promise<RestaurantRecord[]> {
@@ -840,6 +868,106 @@ export class FixtureRepository implements RestaurantRepository {
       topic: 'coverage.quality_updated', payload: { coverage_area_id: areaId, quality_metrics: next }, at: update.updatedAt
     });
     return this.getCoverageQuality(areaId, update.updatedAt);
+  }
+
+  async listManagedCoverage(): Promise<ManagedCoverageCity[]> {
+    return this.managedCoverage.map(city => ({
+      code: city.code,
+      name: city.name,
+      timezone: city.timezone,
+      status: city.status,
+      areas: city.areas.map(area => ({
+        id: area.id,
+        name: area.name,
+        configuredStatus: area.status,
+        effectiveStatus: effectiveCoverageStatus(city.status, area.status)
+      }))
+    }));
+  }
+
+  async updateCityStatus(code: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity> {
+    const city = this.managedCoverage.find(candidate => candidate.code === code);
+    if (!city) throw new Error('CITY_NOT_FOUND');
+    const before = city.status;
+    if (before !== update.status) {
+      city.status = update.status;
+      this.recordOperation({
+        actorId: update.actorId,
+        action: 'update_status',
+        entityType: 'city',
+        entityId: code,
+        reason: update.reason,
+        beforeValue: { status: before },
+        afterValue: { status: update.status },
+        topic: 'coverage.city_status_updated',
+        payload: { city_code: code, status: update.status },
+        at: update.updatedAt
+      });
+    }
+    const managed = (await this.listManagedCoverage()).find(candidate => candidate.code === code);
+    if (!managed) throw new Error('CITY_NOT_FOUND');
+    return managed;
+  }
+
+  async updateCoverageAreaStatus(id: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity> {
+    const city = this.managedCoverage.find(candidate => candidate.areas.some(area => area.id === id));
+    const area = city?.areas.find(candidate => candidate.id === id);
+    if (!city || !area) throw new Error('COVERAGE_AREA_NOT_FOUND');
+    const before = area.status;
+    if (before !== update.status) {
+      area.status = update.status;
+      this.recordOperation({
+        actorId: update.actorId,
+        action: 'update_status',
+        entityType: 'coverage_area',
+        entityId: id,
+        reason: update.reason,
+        beforeValue: { status: before },
+        afterValue: { status: update.status },
+        topic: 'coverage.area_status_updated',
+        payload: { coverage_area_id: id, city_code: city.code, status: update.status },
+        at: update.updatedAt
+      });
+    }
+    const managed = (await this.listManagedCoverage()).find(candidate => candidate.code === city.code);
+    if (!managed) throw new Error('CITY_NOT_FOUND');
+    return managed;
+  }
+
+  async listExpiringEvidence(query: ExpiringEvidenceQuery): Promise<ExpiringEvidenceRecord[]> {
+    const cutoff = query.at.getTime() + query.withinDays * 86400000;
+    const restaurants = [
+      ...v0Restaurants.map(fixture => toRecord(fixture, null)),
+      ...[...this.managedRestaurants.values()].map(item => structuredClone(item.restaurant))
+    ];
+    return restaurants.flatMap(restaurant => restaurant.evidence.flatMap((evidence, index) => {
+      const expiresAt = evidence.expiresAt ? new Date(evidence.expiresAt).getTime() : Number.NaN;
+      const evidenceKey = `${restaurant.id}:${evidence.attribute}:${evidence.observedAt}`;
+      const status = this.expiredEvidence.has(evidenceKey) ? 'expired' : evidence.status;
+      if ((status !== 'candidate' && status !== 'published')
+        || !Number.isFinite(expiresAt)
+        || expiresAt <= query.at.getTime()
+        || expiresAt > cutoff
+        || (query.coverageAreaId !== null && restaurant.coverageArea.id !== query.coverageAreaId)
+        || (query.attribute !== null && evidence.attribute !== query.attribute)) return [];
+      return [{
+        id: `fixture-evidence:${restaurant.id}:${index}`,
+        restaurantId: restaurant.id,
+        restaurantLegacyId: restaurant.legacyId,
+        restaurantName: restaurant.name,
+        cityCode: restaurant.cityCode,
+        coverageAreaId: restaurant.coverageArea.id,
+        coverageAreaName: restaurant.coverageArea.name,
+        attribute: evidence.attribute,
+        title: evidence.title,
+        sourceType: evidence.sourceType,
+        sourceLabel: evidence.sourceLabel,
+        expiresAt: evidence.expiresAt!,
+        expiresInDays: Math.ceil((expiresAt - query.at.getTime()) / 86400000)
+      }];
+    }))
+      .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt) || left.id.localeCompare(right.id))
+      .slice(0, query.limit);
   }
 
   async listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]> {

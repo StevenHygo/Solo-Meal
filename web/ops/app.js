@@ -12,10 +12,13 @@ const statusLabels = { open: '待处理', in_progress: '处理中', completed: '
 const poiStatusLabels = { pending: '待去重', matched: '已匹配', new_branch: '新分店', rejected: '已驳回' };
 const restaurantStatusLabels = { draft: '草稿', review: '待审核', published: '已发布', withdrawn: '已撤回' };
 const outboxStatusLabels = { pending: '待投递', processing: '投递中', failed: '失败', processed: '已完成' };
+const coverageStatusLabels = { live: '正式开放', beta: 'Beta', upcoming: '即将开放', paused: '暂停', unsupported: '未覆盖' };
+const coverageStatuses = ['live', 'beta', 'upcoming', 'paused', 'unsupported'];
 const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const evidenceAttributeLabels = {
   accepts_solo: '单人接待', seating: '座位情况', ordering: '点餐规则',
-  minimum_spend: '最低消费', solo_portion: '单人份'
+  minimum_spend: '最低消费', solo_portion: '单人份', meal_speed: '用餐速度',
+  hours: '营业时间', location: '位置', noise: '氛围'
 };
 const evidenceSourceLabels = {
   operator_visit: '运营到店', operator_call: '运营电话', menu_review: '菜单核验', merchant_provided: '商户提供'
@@ -24,7 +27,8 @@ const state = {
   apiBase: '', token: '', operator: '', mode: 'tasks', status: 'open', tasks: [], selectedTaskId: null,
   poiStatus: 'pending', poiCandidates: [], selectedPoiId: null, poiImportCandidates: [],
   restaurantStatus: 'draft', restaurants: [], selectedRestaurantId: null, draftCandidate: null,
-  outboxStatus: 'pending', outboxEvents: [], selectedOutboxId: null, auditLogs: [],
+  outboxStatus: 'pending', outboxEvents: [], selectedOutboxId: null, auditLogs: [], expiringEvidence: [],
+  coverageCities: [],
   restaurantDirty: false, busy: false
 };
 const el = id => document.getElementById(id);
@@ -785,6 +789,83 @@ async function updateCoverageQuality(event) {
   }
 }
 
+function coverageStatusOptions(selected) {
+  return coverageStatuses.map(status => `<option value="${status}" ${status === selected ? 'selected' : ''}>${escapeHtml(coverageStatusLabels[status])}</option>`).join('');
+}
+
+function renderCoverage() {
+  const list = el('coverageList');
+  if (!state.coverageCities.length) {
+    list.innerHTML = '<div class="queue-empty">没有可管理的城市或覆盖区域</div>';
+    return;
+  }
+  list.innerHTML = state.coverageCities.map(city => `
+    <section class="coverage-city">
+      <div class="coverage-city-heading"><h3>${escapeHtml(city.name)}</h3><span>${escapeHtml(city.code)}</span></div>
+      <div class="coverage-row" data-coverage-kind="city" data-coverage-id="${escapeHtml(city.code)}">
+        <div><strong>城市总开关</strong><small>暂停时覆盖全部区域，但不改写区域原状态</small></div>
+        <span class="coverage-effective">${escapeHtml(coverageStatusLabels[city.status] || city.status)}</span>
+        <select aria-label="${escapeHtml(city.name)}城市状态">${coverageStatusOptions(city.status)}</select>
+        <button class="secondary-button compact-button" data-update-coverage type="button">应用</button>
+      </div>
+      ${city.areas.map(area => `
+        <div class="coverage-row" data-coverage-kind="area" data-coverage-id="${escapeHtml(area.id)}">
+          <div><strong>${escapeHtml(area.name)}</strong><small>${escapeHtml(area.id)} · 原状态 ${escapeHtml(coverageStatusLabels[area.configured_status] || area.configured_status)}</small></div>
+          <span class="coverage-effective" data-masked="${area.configured_status !== area.effective_status}">${escapeHtml(coverageStatusLabels[area.effective_status] || area.effective_status)}</span>
+          <select aria-label="${escapeHtml(area.name)}覆盖状态">${coverageStatusOptions(area.configured_status)}</select>
+          <button class="secondary-button compact-button" data-update-coverage type="button">应用</button>
+        </div>
+      `).join('')}
+    </section>
+  `).join('');
+}
+
+async function loadCoverage() {
+  if (!state.token || state.busy) return;
+  state.busy = true;
+  try {
+    const response = await request('/api/v1/admin/coverage');
+    state.coverageCities = response.cities;
+    renderCoverage();
+  } catch (error) {
+    state.coverageCities = [];
+    renderCoverage();
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function updateCoverageStatus(button) {
+  if (!state.token || state.busy) return;
+  const row = button.closest('[data-coverage-kind]');
+  const kind = row?.dataset.coverageKind;
+  const id = row?.dataset.coverageId;
+  const status = row?.querySelector('select')?.value;
+  const reason = el('coverageReasonInput').value.trim();
+  if (!kind || !id || !coverageStatuses.includes(status)) return;
+  if (reason.length < 5) {
+    showToast('请填写至少 5 个字的操作说明');
+    el('coverageReasonInput').focus();
+    return;
+  }
+  if ((status === 'paused' || status === 'unsupported')
+    && !window.confirm(`确认将${kind === 'city' ? '城市' : '覆盖区域'}设为“${coverageStatusLabels[status]}”？`)) return;
+  const path = kind === 'city'
+    ? `/api/v1/admin/cities/${encodeURIComponent(id)}/status`
+    : `/api/v1/admin/coverage/${encodeURIComponent(id)}/status`;
+  state.busy = true;
+  try {
+    await request(path, { method: 'PATCH', body: JSON.stringify({ status, reason }) });
+    showToast('覆盖状态已更新');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+  await loadCoverage();
+}
+
 function renderOutboxEvents() {
   el('outboxCount').textContent = state.outboxEvents.length;
   const list = el('outboxList');
@@ -832,6 +913,35 @@ function auditQuery() {
   return params.toString();
 }
 
+function expiryQuery() {
+  const params = new URLSearchParams({
+    within_days: el('expiryDaysInput').value,
+    limit: '100'
+  });
+  const coverage = el('expiryCoverageInput').value.trim();
+  const attribute = el('expiryAttributeInput').value;
+  if (coverage) params.set('coverage_area_id', coverage);
+  if (attribute) params.set('attribute', attribute);
+  return params.toString();
+}
+
+function renderExpiringEvidence() {
+  el('expiringEvidenceCount').textContent = state.expiringEvidence.length;
+  const list = el('expiringEvidenceList');
+  if (!state.expiringEvidence.length) {
+    list.innerHTML = '<div class="queue-empty">当前窗口没有即将过期的证据</div>';
+    return;
+  }
+  list.innerHTML = state.expiringEvidence.map(evidence => `
+    <article class="expiry-row">
+      <span class="expiry-days">${escapeHtml(String(evidence.expires_in_days))} 天</span>
+      <div><strong>${escapeHtml(evidence.restaurant.name)} · ${escapeHtml(evidenceAttributeLabels[evidence.attribute] || evidence.attribute)}</strong><small>${escapeHtml(evidence.coverage_area.name)} · ${escapeHtml(evidence.title)}</small></div>
+      <div><strong>${escapeHtml(evidence.source_label)}</strong><small>${escapeHtml(evidence.source_type)}</small></div>
+      <time>${escapeHtml(formatTime(evidence.expires_at))}</time>
+    </article>
+  `).join('');
+}
+
 function renderAuditLogs() {
   el('auditCount').textContent = state.auditLogs.length;
   const list = el('auditList');
@@ -853,25 +963,30 @@ async function loadOperations({ preserveSelection = false } = {}) {
   state.busy = true;
   setConnection('idle', '正在读取');
   try {
-    const [outboxResponse, auditResponse] = await Promise.all([
+    const [outboxResponse, auditResponse, expiryResponse] = await Promise.all([
       request(`/api/v1/admin/outbox-events?status=${encodeURIComponent(state.outboxStatus)}&limit=100`),
-      request(`/api/v1/admin/audit-logs?${auditQuery()}`)
+      request(`/api/v1/admin/audit-logs?${auditQuery()}`),
+      request(`/api/v1/admin/evidence/expiring?${expiryQuery()}`)
     ]);
     state.outboxEvents = outboxResponse.outbox_events;
     state.auditLogs = auditResponse.audit_logs;
+    state.expiringEvidence = expiryResponse.evidence;
     if (!preserveSelection || !state.outboxEvents.some(event => event.id === state.selectedOutboxId)) {
       state.selectedOutboxId = state.outboxEvents[0]?.id || null;
     }
     renderOutboxEvents();
     renderOutboxDetail();
     renderAuditLogs();
+    renderExpiringEvidence();
     setConnection('ready', '已连接');
   } catch (error) {
     state.outboxEvents = [];
     state.auditLogs = [];
+    state.expiringEvidence = [];
     state.selectedOutboxId = null;
     renderOutboxEvents();
     renderAuditLogs();
+    renderExpiringEvidence();
     setConnection('error', '连接失败');
     showToast(error.message);
   } finally {
@@ -934,6 +1049,7 @@ function setMode(mode) {
   if (mode !== 'poi') {
     el('poiImportBand').classList.add('hidden');
     el('qualityBand').classList.add('hidden');
+    el('coverageBand').classList.add('hidden');
   }
   document.querySelectorAll('[data-mode]').forEach(button => {
     const selected = button.dataset.mode === mode;
@@ -1005,14 +1121,27 @@ function bindEvents() {
   el('refreshPoiButton').addEventListener('click', () => loadPoiCandidates({ preserveSelection: true }));
   el('openPoiImportButton').addEventListener('click', () => {
     el('qualityBand').classList.add('hidden');
+    el('coverageBand').classList.add('hidden');
     el('poiImportBand').classList.toggle('hidden');
   });
   el('cancelPoiImportButton').addEventListener('click', () => el('poiImportBand').classList.add('hidden'));
   el('openQualityButton').addEventListener('click', () => {
     el('poiImportBand').classList.add('hidden');
+    el('coverageBand').classList.add('hidden');
     el('qualityBand').classList.toggle('hidden');
   });
   el('closeQualityButton').addEventListener('click', () => el('qualityBand').classList.add('hidden'));
+  el('openCoverageButton').addEventListener('click', () => {
+    el('poiImportBand').classList.add('hidden');
+    el('qualityBand').classList.add('hidden');
+    el('coverageBand').classList.toggle('hidden');
+    if (!el('coverageBand').classList.contains('hidden')) loadCoverage();
+  });
+  el('closeCoverageButton').addEventListener('click', () => el('coverageBand').classList.add('hidden'));
+  el('coverageList').addEventListener('click', event => {
+    const button = event.target.closest('[data-update-coverage]');
+    if (button) updateCoverageStatus(button);
+  });
   el('qualityForm').addEventListener('submit', loadCoverageQuality);
   el('qualityUpdateForm').addEventListener('submit', updateCoverageQuality);
   el('poiImportForm').addEventListener('submit', submitPoiImport);
@@ -1133,6 +1262,10 @@ function bindEvents() {
   });
   el('retryOutboxButton').addEventListener('click', retryOutboxEvent);
   el('auditFilterForm').addEventListener('submit', event => {
+    event.preventDefault();
+    loadOperations({ preserveSelection: true });
+  });
+  el('expiryFilterForm').addEventListener('submit', event => {
     event.preventDefault();
     loadOperations({ preserveSelection: true });
   });

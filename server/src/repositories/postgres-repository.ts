@@ -16,6 +16,12 @@ import type {
   OutboxFailure,
   OutboxStatus
 } from '../domain/operations-control.js';
+import type {
+  CoverageStatusUpdate,
+  ExpiringEvidenceQuery,
+  ExpiringEvidenceRecord,
+  ManagedCoverageCity
+} from '../domain/coverage-operations.js';
 import type { City, CoverageArea, LocationSuggestion } from '../domain/types.js';
 import { rankingConfig } from '../catalog.js';
 import { withTransaction, type DatabaseClient, type DatabasePool } from '../db/pool.js';
@@ -514,7 +520,11 @@ export class PostgresRepository implements RestaurantRepository {
       areas: Array<{ id: string; name: string; status: CoverageArea['status'] }>;
     }>(`
       SELECT c.code, c.name, c.timezone, c.status,
-        coalesce(jsonb_agg(jsonb_build_object('id', ca.id, 'name', ca.name, 'status', ca.status)
+        coalesce(jsonb_agg(jsonb_build_object(
+          'id', ca.id,
+          'name', ca.name,
+          'status', CASE WHEN c.status IN ('live', 'beta') THEN ca.status ELSE c.status END
+        )
           ORDER BY ca.created_at) FILTER (WHERE ca.id IS NOT NULL), '[]'::jsonb) AS areas
       FROM cities c LEFT JOIN coverage_areas ca ON ca.city_id = c.id
       GROUP BY c.id ORDER BY c.created_at
@@ -526,7 +536,9 @@ export class PostgresRepository implements RestaurantRepository {
     const result = await this.pool.query<{
       id: string; name: string; status: CoverageArea['status']; city_code: string; city_timezone: string;
     }>(`
-      SELECT ca.id, ca.name, ca.status, c.code AS city_code, c.timezone AS city_timezone
+      SELECT ca.id, ca.name,
+        CASE WHEN c.status IN ('live', 'beta') THEN ca.status ELSE c.status END AS status,
+        c.code AS city_code, c.timezone AS city_timezone
       FROM coverage_areas ca JOIN cities c ON c.id = ca.city_id WHERE ca.id = $1
     `, [id]);
     const row = result.rows[0];
@@ -539,7 +551,11 @@ export class PostgresRepository implements RestaurantRepository {
       area_id: string | null; status: LocationSuggestion['status'];
     }>(`
       SELECT la.name AS label, la.detail, la.kind, c.code AS city_code, la.coverage_area_id AS area_id,
-        coalesce(ca.status, c.status) AS status
+        CASE
+          WHEN ca.id IS NULL THEN c.status
+          WHEN c.status IN ('live', 'beta') THEN ca.status
+          ELSE c.status
+        END AS status
       FROM location_aliases la
       JOIN cities c ON c.id = la.city_id
       LEFT JOIN coverage_areas ca ON ca.id = la.coverage_area_id
@@ -1266,6 +1282,154 @@ export class PostgresRepository implements RestaurantRepository {
       `, [areaId, JSON.stringify({ coverage_area_id: areaId, quality_metrics: next }), update.updatedAt]);
     });
     return this.getCoverageQuality(areaId, update.updatedAt);
+  }
+
+  async listManagedCoverage(): Promise<ManagedCoverageCity[]> {
+    const result = await this.pool.query<{
+      code: string;
+      name: string;
+      timezone: string;
+      status: City['status'];
+      areas: Array<{
+        id: string;
+        name: string;
+        configured_status: CoverageArea['status'];
+        effective_status: CoverageArea['status'];
+      }>;
+    }>(`
+      SELECT c.code, c.name, c.timezone, c.status,
+        coalesce(jsonb_agg(jsonb_build_object(
+          'id', ca.id,
+          'name', ca.name,
+          'configured_status', ca.status,
+          'effective_status', CASE WHEN c.status IN ('live', 'beta') THEN ca.status ELSE c.status END
+        ) ORDER BY ca.created_at) FILTER (WHERE ca.id IS NOT NULL), '[]'::jsonb) AS areas
+      FROM cities c
+      LEFT JOIN coverage_areas ca ON ca.city_id = c.id
+      GROUP BY c.id
+      ORDER BY c.created_at
+    `);
+    return result.rows.map(city => ({
+      code: city.code,
+      name: city.name,
+      timezone: city.timezone,
+      status: city.status,
+      areas: city.areas.map(area => ({
+        id: area.id,
+        name: area.name,
+        configuredStatus: area.configured_status,
+        effectiveStatus: area.effective_status
+      }))
+    }));
+  }
+
+  async updateCityStatus(code: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity> {
+    await withTransaction(this.pool, async client => {
+      const currentResult = await client.query<{ status: City['status'] }>(`
+        SELECT status FROM cities WHERE code = $1 FOR UPDATE
+      `, [code]);
+      const current = currentResult.rows[0];
+      if (!current) throw new Error('CITY_NOT_FOUND');
+      if (current.status === update.status) return;
+      await client.query(`
+        UPDATE cities SET status = $2::coverage_state, updated_at = $3 WHERE code = $1
+      `, [code, update.status, update.updatedAt]);
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, 'update_status', 'city', $2, $3, $4::jsonb, $5::jsonb, $6)
+      `, [update.actorId, code, update.reason,
+        JSON.stringify({ status: current.status }), JSON.stringify({ status: update.status }), update.updatedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('coverage.city_status_updated', $1, $2::jsonb, $3, $3)
+      `, [code, JSON.stringify({ city_code: code, status: update.status }), update.updatedAt]);
+    });
+    const city = (await this.listManagedCoverage()).find(candidate => candidate.code === code);
+    if (!city) throw new Error('CITY_NOT_FOUND');
+    return city;
+  }
+
+  async updateCoverageAreaStatus(id: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity> {
+    let cityCode = '';
+    await withTransaction(this.pool, async client => {
+      const currentResult = await client.query<{ status: CoverageArea['status']; city_code: string }>(`
+        SELECT ca.status, c.code AS city_code
+        FROM coverage_areas ca
+        JOIN cities c ON c.id = ca.city_id
+        WHERE ca.id = $1
+        FOR UPDATE OF ca
+      `, [id]);
+      const current = currentResult.rows[0];
+      if (!current) throw new Error('COVERAGE_AREA_NOT_FOUND');
+      cityCode = current.city_code;
+      if (current.status === update.status) return;
+      await client.query(`
+        UPDATE coverage_areas SET status = $2::coverage_state, updated_at = $3 WHERE id = $1
+      `, [id, update.status, update.updatedAt]);
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, 'update_status', 'coverage_area', $2, $3, $4::jsonb, $5::jsonb, $6)
+      `, [update.actorId, id, update.reason,
+        JSON.stringify({ status: current.status }), JSON.stringify({ status: update.status }), update.updatedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('coverage.area_status_updated', $1, $2::jsonb, $3, $3)
+      `, [id, JSON.stringify({ coverage_area_id: id, city_code: cityCode, status: update.status }), update.updatedAt]);
+    });
+    const city = (await this.listManagedCoverage()).find(candidate => candidate.code === cityCode);
+    if (!city) throw new Error('CITY_NOT_FOUND');
+    return city;
+  }
+
+  async listExpiringEvidence(query: ExpiringEvidenceQuery): Promise<ExpiringEvidenceRecord[]> {
+    const cutoff = new Date(query.at.getTime() + query.withinDays * 86400000);
+    const result = await this.pool.query<{
+      id: string;
+      restaurant_id: string;
+      restaurant_legacy_id: string | null;
+      restaurant_name: string;
+      city_code: string;
+      coverage_area_id: string;
+      coverage_area_name: string;
+      attribute: string;
+      title: string;
+      source_type: string;
+      source_label: string;
+      expires_at: string;
+      expires_in_days: number;
+    }>(`
+      SELECT e.id::text, r.id::text AS restaurant_id, r.legacy_id AS restaurant_legacy_id,
+        r.name AS restaurant_name, c.code AS city_code,
+        ca.id AS coverage_area_id, ca.name AS coverage_area_name,
+        e.attribute, e.title, e.source_type, e.source_label, e.expires_at::text,
+        ceil(extract(epoch FROM (e.expires_at - $1::timestamptz)) / 86400)::integer AS expires_in_days
+      FROM evidence e
+      JOIN restaurants r ON r.id = e.restaurant_id
+      JOIN cities c ON c.id = r.city_id
+      JOIN coverage_areas ca ON ca.id = r.coverage_area_id
+      WHERE e.status IN ('candidate', 'published')
+        AND e.expires_at > $1
+        AND e.expires_at <= $2
+        AND ($3::text IS NULL OR r.coverage_area_id = $3)
+        AND ($4::text IS NULL OR e.attribute = $4)
+      ORDER BY e.expires_at, e.id
+      LIMIT $5
+    `, [query.at, cutoff, query.coverageAreaId, query.attribute, query.limit]);
+    return result.rows.map(row => ({
+      id: row.id,
+      restaurantId: row.restaurant_id,
+      restaurantLegacyId: row.restaurant_legacy_id,
+      restaurantName: row.restaurant_name,
+      cityCode: row.city_code,
+      coverageAreaId: row.coverage_area_id,
+      coverageAreaName: row.coverage_area_name,
+      attribute: row.attribute,
+      title: row.title,
+      sourceType: row.source_type,
+      sourceLabel: row.source_label,
+      expiresAt: row.expires_at,
+      expiresInDays: Number(row.expires_in_days)
+    }));
   }
 
   async listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]> {
