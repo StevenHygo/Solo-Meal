@@ -9,7 +9,7 @@
 - 关键词、预算、品类、营业状态、用餐时间和距离筛选；
 - 16 类食物图标和稳定品类 code；
 - 上海试点区域搜索，以及北京、深圳等城市的明确开放状态；
-- 餐厅列表与响应式示意地图；
+- 餐厅列表与不依赖高德 API 的可拖动真实地图；
 - 单人适合度、可信度、来源和核验时间；
 - 餐厅详情、复制地址及高德地图导航；
 - 浏览器本机私有收藏；
@@ -63,6 +63,16 @@ pnpm api:dev
 排序权重由服务端活动配置控制。运营台可创建五项权重合计为 1 的版本化草稿，并发布新版本或回滚已退休版本；配置切换、审计和 Outbox 在同一事务提交。搜索、详情和配置接口返回活动 `ranking_version`，配置切换后旧分页游标会返回 `INVALID_CURSOR`，避免跨版本续页。
 
 POI 导入只接受附带授权依据的标准化 JSON，并停留在候选队列；确认“新分店”也不会直接进入搜索。运营人员需录入规范字段和有效证据，提交审核后由另一操作人发布；撤回会立即退出公开搜索。文件格式、状态机和 `coverage-beta-v1` / `coverage-live-v1` 门槛见 [Stage C POI 运维约定](./docs/stage-c-poi-operations.md)。
+
+公开网页、商户自有页面或其他已授权来源整理出的试点候选，可以先转成标准 POI Import payload。默认只打印 payload；带本地 API 地址、运营令牌和操作人 ID 时会直接写入候选库，不会发布到用户搜索：
+
+```bash
+node scripts/prepare-public-poi-import.mjs docs/examples/public-source-poi-jingan.sample.json
+node scripts/prepare-public-poi-import.mjs docs/examples/public-source-poi-jingan.sample.json \
+  --api-url http://127.0.0.1:8787 \
+  --token local-stage-c-admin-token-change-me-2026 \
+  --operator-id operator.demo
+```
 
 反馈创建、复核任务、审计记录和 Outbox 事件在一个数据库事务内提交。相同幂等键只创建一份记录；失败反馈保存在浏览器本机，只有用户点击设置中的同步按钮才会重试，不会后台自动发送。
 
@@ -123,7 +133,8 @@ git push -u origin main
 - 收藏和预算保存在浏览器 `localStorage` 中。静态模式纠错仅保存在本机；API 模式下，用户点击提交或同步后会把餐厅 ID、问题类型和备注发送到配置的“一人食”API。
 - API 发送失败的纠错标为本机待同步记录，不会自动重试；清除本机数据会同时删除这些本地记录。已被服务端接收的记录由服务端数据保留策略管理。
 - 浏览器定位只在用户主动点击后申请；API 模式会把本次坐标和坐标类型发送到配置的“一人食”API，但前端不保存精确坐标或轨迹。
-- “地图导航”会在新窗口打开高德 URI 页面；这是唯一由用户主动触发的外部跳转。
+- 列表地图使用 OpenStreetMap 瓦片展示真实可拖动底图，不接入高德 JS/API；生产流量应使用符合条款的瓦片服务或自建瓦片。
+- “地图导航”会在新窗口打开高德 URI 页面；这是用户主动触发的外部跳转。
 
 ## 项目结构
 
@@ -152,6 +163,7 @@ docs/
   stage-c-poi-operations.md # POI 候选、去重和覆盖门槛运维约定
 miniprogram/               # 暂停维护的原生小程序原型
 scripts/
+  prepare-public-poi-import.mjs # 公开/授权来源候选转 POI 导入 payload
   validate-web.mjs
 ```
 

@@ -85,14 +85,16 @@
 
           <div class="results-layout">
             <div class="result-list" id="resultList"></div>
-            <div class="map-panel" id="mapPanel" aria-label="餐厅示意地图">
-              <div class="map-label map-label-a">静安寺</div>
-              <div class="map-label map-label-b">常德路</div>
-              <div class="map-label map-label-c">南京西路</div>
-              <div class="map-road road-a"></div><div class="map-road road-b"></div><div class="map-road road-c"></div>
-              <div class="map-block block-a"></div><div class="map-block block-b"></div><div class="map-block block-c"></div>
+            <div class="map-panel" id="mapPanel" aria-label="餐厅真实地图" role="application" tabindex="0">
+              <div class="map-tiles" id="mapTiles" aria-hidden="true"></div>
               <div id="mapMarkers"></div>
-              <div class="map-legend"><span class="legend-dot"></span>单人友好候选 · 点击分数查看详情</div>
+              <div class="map-controls" aria-label="地图控制">
+                <button class="map-control-button" data-map-zoom="in" type="button" aria-label="放大地图">+</button>
+                <button class="map-control-button" data-map-zoom="out" type="button" aria-label="缩小地图">−</button>
+              </div>
+              <button class="map-search-button hidden" id="mapSearchAreaButton" type="button">搜索此区域</button>
+              <div class="map-attribution">© OpenStreetMap</div>
+              <div class="map-legend"><span class="legend-dot"></span>拖动真实地图 · 点击分数查看详情</div>
             </div>
           </div>
 

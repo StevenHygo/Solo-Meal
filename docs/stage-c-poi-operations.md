@@ -7,6 +7,7 @@
 ## 1. 强制边界
 
 - 只导入已获授权、允许保存相应字段的 Provider 数据；每个批次必须记录来源标签和授权依据。
+- 公开搜索或网页抓取只能作为“候选整理”输入，必须遵守来源站点条款、robots、版权和个人信息规则；不得绕过登录、验证码或反爬，也不得导入未授权平台评论、图片或用户内容。
 - 不接收或保存任意 Provider 原始响应，只保存去重所需的规范化字段。
 - 候选 POI 不进入餐厅搜索。`new_branch` 只表示去重完成，仍需核心字段、单人证据和二次审核。
 - 候选建立餐厅草稿后，POI 决策状态被锁定；不能再从候选队列改为匹配已有或驳回，避免孤立草稿。
@@ -41,6 +42,23 @@
 ```
 
 `phone` 和 `raw_category` 可省略。电话号码仅规范化为数字用于后续分店核验，当前不会返回给用户端。
+
+对于搜索或抓取后人工整理出的公开/授权来源，可先使用仓库脚本生成同一套标准化导入 payload：
+
+```bash
+node scripts/prepare-public-poi-import.mjs docs/examples/public-source-poi-jingan.sample.json
+```
+
+需要直接写入本地试点候选库时，保持 API 运行并传入运营凭据：
+
+```bash
+node scripts/prepare-public-poi-import.mjs docs/examples/public-source-poi-jingan.sample.json \
+  --api-url http://127.0.0.1:8787 \
+  --token local-stage-c-admin-token-change-me-2026 \
+  --operator-id operator.demo
+```
+
+该脚本不会抓取网页，也不会发布餐厅；它只把已确认可使用的来源整理为 POI 候选导入格式。
 
 ## 3. 候选状态
 

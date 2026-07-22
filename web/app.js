@@ -44,6 +44,13 @@ const reportTypes = [
   { code: 'other', label: '其他' }
 ];
 
+const mapConfig = {
+  tileSize: 256,
+  minZoom: 13,
+  maxZoom: 18,
+  tileUrlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+};
+
 const state = {
   keyword: '',
   scene: 'now',
@@ -68,6 +75,13 @@ const state = {
   detailSequence: 0,
   favoritesSequence: 0,
   fallbackNotified: false
+};
+
+const mapState = {
+  center: { lat: 31.2231, lng: 121.4452 },
+  zoom: 15,
+  userMoved: false,
+  drag: null
 };
 
 const el = id => document.getElementById(id);
@@ -263,11 +277,145 @@ function renderResults() {
   }).join('');
 }
 
+function outOfChina(coordinate) {
+  return coordinate.lng < 72.004 || coordinate.lng > 137.8347 || coordinate.lat < 0.8293 || coordinate.lat > 55.8271;
+}
+
+function transformLat(x, y) {
+  let value = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+  value += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3;
+  value += (20 * Math.sin(y * Math.PI) + 40 * Math.sin(y / 3 * Math.PI)) * 2 / 3;
+  value += (160 * Math.sin(y / 12 * Math.PI) + 320 * Math.sin(y * Math.PI / 30)) * 2 / 3;
+  return value;
+}
+
+function transformLng(x, y) {
+  let value = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+  value += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3;
+  value += (20 * Math.sin(x * Math.PI) + 40 * Math.sin(x / 3 * Math.PI)) * 2 / 3;
+  value += (150 * Math.sin(x / 12 * Math.PI) + 300 * Math.sin(x / 30 * Math.PI)) * 2 / 3;
+  return value;
+}
+
+function gcj02ToWgs84(coordinate) {
+  if (outOfChina(coordinate)) return { ...coordinate };
+  const a = 6378245.0;
+  const ee = 0.00669342162296594323;
+  let dLat = transformLat(coordinate.lng - 105, coordinate.lat - 35);
+  let dLng = transformLng(coordinate.lng - 105, coordinate.lat - 35);
+  const radLat = coordinate.lat / 180 * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - ee * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
+  dLng = (dLng * 180) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return { lat: coordinate.lat * 2 - (coordinate.lat + dLat), lng: coordinate.lng * 2 - (coordinate.lng + dLng) };
+}
+
+function wgs84ToGcj02(coordinate) {
+  if (outOfChina(coordinate)) return { ...coordinate };
+  const a = 6378245.0;
+  const ee = 0.00669342162296594323;
+  let dLat = transformLat(coordinate.lng - 105, coordinate.lat - 35);
+  let dLng = transformLng(coordinate.lng - 105, coordinate.lat - 35);
+  const radLat = coordinate.lat / 180 * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - ee * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
+  dLng = (dLng * 180) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return { lat: coordinate.lat + dLat, lng: coordinate.lng + dLng };
+}
+
+function coordinateForMap(coordinate, coordType = 'wgs84') {
+  if (!coordinate || !Number.isFinite(coordinate.lat) || !Number.isFinite(coordinate.lng)) return null;
+  return coordType === 'gcj02' ? gcj02ToWgs84(coordinate) : { lat: coordinate.lat, lng: coordinate.lng };
+}
+
+function restaurantMapCoordinate(item) {
+  const coordType = item.mapCoordType || 'gcj02';
+  return coordinateForMap({ lat: item.latitude, lng: item.longitude }, coordType);
+}
+
+function clampMapLatitude(lat) {
+  return Math.max(-85.05112878, Math.min(85.05112878, lat));
+}
+
+function normalizeMapLng(lng) {
+  return ((lng + 180) % 360 + 360) % 360 - 180;
+}
+
+function latLngToWorld(coordinate, zoom = mapState.zoom) {
+  const sinLat = Math.sin(clampMapLatitude(coordinate.lat) * Math.PI / 180);
+  const scale = mapConfig.tileSize * 2 ** zoom;
+  return {
+    x: (coordinate.lng + 180) / 360 * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale
+  };
+}
+
+function worldToLatLng(point, zoom = mapState.zoom) {
+  const scale = mapConfig.tileSize * 2 ** zoom;
+  const lng = point.x / scale * 360 - 180;
+  const n = Math.PI - 2 * Math.PI * point.y / scale;
+  return {
+    lat: 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))),
+    lng: normalizeMapLng(lng)
+  };
+}
+
+function chooseMapCenter() {
+  const current = coordinateForMap(state.location, state.location.coordType);
+  if (!state.results.length) return current || mapState.center;
+  const points = state.results.map(restaurantMapCoordinate).filter(Boolean);
+  if (!points.length) return current || mapState.center;
+  const centerLat = points.reduce((sum, point) => sum + point.lat, 0) / points.length;
+  const centerLng = points.reduce((sum, point) => sum + point.lng, 0) / points.length;
+  return current || { lat: centerLat, lng: centerLng };
+}
+
+function tileUrl(zoom, x, y) {
+  return mapConfig.tileUrlTemplate
+    .replace('{z}', zoom)
+    .replace('{x}', x)
+    .replace('{y}', y);
+}
+
 function renderMap() {
-  const positions = [[12, 18], [51, 12], [70, 41], [25, 57], [58, 72], [15, 78]];
-  el('mapMarkers').innerHTML = state.results.map((item, index) => {
-    const position = positions[index % positions.length];
-    return `<button class="map-marker" style="left:${position[0]}%;top:${position[1]}%" data-open-detail="${item.id}" type="button" aria-label="${escapeHtml(item.name)}，适合度 ${item.soloScore}">${item.soloScore}</button>`;
+  const panel = el('mapPanel');
+  const tiles = el('mapTiles');
+  const markers = el('mapMarkers');
+  if (!mapState.userMoved) mapState.center = chooseMapCenter();
+
+  const width = Math.max(panel.clientWidth || 520, 320);
+  const height = Math.max(panel.clientHeight || 560, 320);
+  const zoom = mapState.zoom;
+  const centerWorld = latLngToWorld(mapState.center, zoom);
+  const topLeft = { x: centerWorld.x - width / 2, y: centerWorld.y - height / 2 };
+  const maxTile = 2 ** zoom;
+  const firstX = Math.floor(topLeft.x / mapConfig.tileSize);
+  const firstY = Math.floor(topLeft.y / mapConfig.tileSize);
+  const lastX = Math.floor((topLeft.x + width) / mapConfig.tileSize);
+  const lastY = Math.floor((topLeft.y + height) / mapConfig.tileSize);
+  const tileMarkup = [];
+
+  for (let x = firstX; x <= lastX; x += 1) {
+    for (let y = firstY; y <= lastY; y += 1) {
+      if (y < 0 || y >= maxTile) continue;
+      const wrappedX = ((x % maxTile) + maxTile) % maxTile;
+      tileMarkup.push(`<img class="map-tile" src="${tileUrl(zoom, wrappedX, y)}" alt="" draggable="false" style="left:${Math.round(x * mapConfig.tileSize - topLeft.x)}px;top:${Math.round(y * mapConfig.tileSize - topLeft.y)}px" />`);
+    }
+  }
+
+  tiles.innerHTML = tileMarkup.join('');
+  markers.innerHTML = state.results.map(item => {
+    const coordinate = restaurantMapCoordinate(item);
+    if (!coordinate) return '';
+    const world = latLngToWorld(coordinate, zoom);
+    const left = world.x - topLeft.x;
+    const top = world.y - topLeft.y;
+    if (left < -70 || left > width + 70 || top < -70 || top > height + 70) return '';
+    return `<button class="map-marker" style="left:${Math.round(left)}px;top:${Math.round(top)}px" data-open-detail="${item.id}" type="button" aria-label="${escapeHtml(item.name)}，适合度 ${item.soloScore}">${item.soloScore}</button>`;
   }).join('');
 }
 
@@ -527,6 +675,62 @@ function showToast(message) {
   showToast.timer = setTimeout(() => toast.classList.add('hidden'), 1800);
 }
 
+function setMapSearchPending(pending) {
+  el('mapSearchAreaButton').classList.toggle('hidden', !pending);
+}
+
+function beginMapDrag(event) {
+  if (event.target.closest('button, a')) return;
+  event.preventDefault();
+  const panel = el('mapPanel');
+  mapState.drag = {
+    pointerId: event.pointerId ?? 'mouse',
+    startX: event.clientX,
+    startY: event.clientY,
+    centerWorld: latLngToWorld(mapState.center)
+  };
+  if (event.pointerId !== undefined) panel.setPointerCapture(event.pointerId);
+  panel.classList.add('dragging');
+}
+
+function moveMapDrag(event) {
+  const pointerId = event.pointerId ?? 'mouse';
+  if (!mapState.drag || mapState.drag.pointerId !== pointerId) return;
+  const nextWorld = {
+    x: mapState.drag.centerWorld.x - (event.clientX - mapState.drag.startX),
+    y: mapState.drag.centerWorld.y - (event.clientY - mapState.drag.startY)
+  };
+  mapState.center = worldToLatLng(nextWorld);
+  mapState.userMoved = true;
+  setMapSearchPending(true);
+  renderMap();
+}
+
+function endMapDrag(event) {
+  const pointerId = event.pointerId ?? 'mouse';
+  if (!mapState.drag || mapState.drag.pointerId !== pointerId) return;
+  el('mapPanel').classList.remove('dragging');
+  mapState.drag = null;
+}
+
+function zoomMap(direction) {
+  mapState.zoom = Math.max(mapConfig.minZoom, Math.min(mapConfig.maxZoom, mapState.zoom + direction));
+  mapState.userMoved = true;
+  setMapSearchPending(true);
+  renderMap();
+}
+
+function searchMapArea() {
+  const gcj02Center = wgs84ToGcj02(mapState.center);
+  state.location = { ...gcj02Center, coordType: 'gcj02' };
+  state.locationLabel = '地图中心附近';
+  state.filters.maxDistance = state.filters.maxDistance || '2000';
+  el('locationLabel').textContent = state.locationLabel;
+  syncFilterControls();
+  setMapSearchPending(false);
+  searchRestaurants();
+}
+
 function setView(view) {
   state.view = view;
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view));
@@ -534,6 +738,7 @@ function setView(view) {
   const map = el('mapPanel');
   layout.classList.toggle('map-only', view === 'map');
   map.classList.toggle('mobile-visible', view === 'map');
+  requestAnimationFrame(renderMap);
 }
 
 function resetFilters() {
@@ -594,6 +799,8 @@ function selectLocation(cityCode, areaCode, label, location = null) {
   state.locationLabel = label || city?.name || '当前位置';
   if (location) state.location = { ...location };
   else if (city?.locationCenterWgs84) state.location = { ...city.locationCenterWgs84, coordType: 'wgs84' };
+  mapState.userMoved = false;
+  setMapSearchPending(false);
   state.keyword = '';
   state.filters.maxDistance = '';
   el('locationLabel').textContent = state.locationLabel;
@@ -642,6 +849,8 @@ function requestLocation() {
       state.cityCode = '';
       state.coverageAreaCode = '';
       state.location = current;
+      mapState.userMoved = false;
+      setMapSearchPending(false);
       state.locationLabel = '当前位置附近';
       el('locationLabel').textContent = state.locationLabel;
       closeOverlay('locationOverlay');
@@ -718,6 +927,12 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const zoom = event.target.closest('[data-map-zoom]');
+  if (zoom) {
+    zoomMap(zoom.dataset.mapZoom === 'in' ? 1 : -1);
+    return;
+  }
+
   const report = event.target.closest('[data-open-report]');
   if (report) return openReport(report.dataset.openReport);
 
@@ -772,6 +987,15 @@ function bindEvents() {
   el('openToggle').addEventListener('change', event => { state.filters.openNow = event.target.checked; searchRestaurants(); });
   el('fastToggle').addEventListener('change', event => { state.filters.fastMeal = event.target.checked; searchRestaurants(); });
   document.querySelector('.view-switch').addEventListener('click', event => { if (event.target.dataset.view) setView(event.target.dataset.view); });
+  el('mapPanel').addEventListener('pointerdown', beginMapDrag);
+  el('mapPanel').addEventListener('pointermove', moveMapDrag);
+  el('mapPanel').addEventListener('pointerup', endMapDrag);
+  el('mapPanel').addEventListener('pointercancel', endMapDrag);
+  el('mapPanel').addEventListener('mousedown', beginMapDrag);
+  window.addEventListener('mousemove', moveMapDrag);
+  window.addEventListener('mouseup', endMapDrag);
+  el('mapSearchAreaButton').addEventListener('click', searchMapArea);
+  window.addEventListener('resize', () => requestAnimationFrame(renderMap));
 
   el('favoritesButton').addEventListener('click', () => { renderFavorites(); openOverlay('favoritesOverlay'); });
   el('aboutButton').addEventListener('click', () => { renderPreferenceOptions(); renderReportSyncStatus(); openOverlay('settingsOverlay'); });

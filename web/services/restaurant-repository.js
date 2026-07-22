@@ -1,9 +1,58 @@
 import { dataSourceConfig, getCuisine } from '../config.js';
-import { restaurants as staticRestaurants } from '../data.js';
+import { restaurants as sourceRestaurants } from '../data.js';
 import { apiClient } from './api-client.js';
 
+const staticRestaurants = sourceRestaurants.map(restaurant => ({ ...restaurant, mapCoordType: restaurant.mapCoordType || 'gcj02' }));
 const cache = new Map(staticRestaurants.map(restaurant => [restaurant.id, restaurant]));
 const successfulSearches = new Map();
+
+function outOfChina(coordinate) {
+  return coordinate.lng < 72.004 || coordinate.lng > 137.8347 || coordinate.lat < 0.8293 || coordinate.lat > 55.8271;
+}
+
+function transformLat(x, y) {
+  let value = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+  value += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3;
+  value += (20 * Math.sin(y * Math.PI) + 40 * Math.sin(y / 3 * Math.PI)) * 2 / 3;
+  value += (160 * Math.sin(y / 12 * Math.PI) + 320 * Math.sin(y * Math.PI / 30)) * 2 / 3;
+  return value;
+}
+
+function transformLng(x, y) {
+  let value = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+  value += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3;
+  value += (20 * Math.sin(x * Math.PI) + 40 * Math.sin(x / 3 * Math.PI)) * 2 / 3;
+  value += (150 * Math.sin(x / 12 * Math.PI) + 300 * Math.sin(x / 30 * Math.PI)) * 2 / 3;
+  return value;
+}
+
+function gcj02ToWgs84(coordinate) {
+  if (outOfChina(coordinate)) return { ...coordinate };
+  const a = 6378245.0;
+  const ee = 0.00669342162296594323;
+  let dLat = transformLat(coordinate.lng - 105, coordinate.lat - 35);
+  let dLng = transformLng(coordinate.lng - 105, coordinate.lat - 35);
+  const radLat = coordinate.lat / 180 * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - ee * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
+  dLng = (dLng * 180) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return { lat: coordinate.lat * 2 - (coordinate.lat + dLat), lng: coordinate.lng * 2 - (coordinate.lng + dLng) };
+}
+
+function normalizeToWgs84(coordinate, coordType = 'wgs84') {
+  return coordType === 'gcj02' ? gcj02ToWgs84(coordinate) : { lat: coordinate.lat, lng: coordinate.lng };
+}
+
+function distanceMeters(left, right) {
+  const radians = degrees => degrees * Math.PI / 180;
+  const latDelta = radians(right.lat - left.lat);
+  const lngDelta = radians(right.lng - left.lng);
+  const a = Math.sin(latDelta / 2) ** 2
+    + Math.cos(radians(left.lat)) * Math.cos(radians(right.lat)) * Math.sin(lngDelta / 2) ** 2;
+  return Math.round(6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
 
 function confidenceLabel(confidence) {
   return { high: '高可信', medium: '中可信', low: '待补充' }[confidence] || '待补充';
@@ -79,19 +128,24 @@ function staticSearch(query) {
   const keyword = query.keyword.trim().toLowerCase();
   const { budget, cuisine, onlySolo, openNow, fastMeal, maxDistance } = query.filters;
   const quietMode = query.scene === 'quiet';
+  const queryLocation = normalizeToWgs84(query.location, query.location.coordType);
   return staticRestaurants
-    .filter(item => {
-      if (!query.coverageSearchable) return false;
-      if (item.cityCode !== query.cityCode || item.coverageAreaCode !== query.coverageAreaCode) return false;
+    .flatMap(item => {
+      if (!query.coverageSearchable) return [];
+      if (item.cityCode !== query.cityCode || item.coverageAreaCode !== query.coverageAreaCode) return [];
       const searchable = [item.name, item.cuisine, item.district, item.address].join(' ').toLowerCase();
-      if (keyword && !searchable.includes(keyword)) return false;
-      if (budget && item.priceMin > Number(budget)) return false;
-      if (cuisine !== 'all' && item.cuisineCode !== cuisine) return false;
-      if (onlySolo && !item.acceptsSolo) return false;
-      if (openNow && !item.openNow) return false;
-      if (fastMeal && item.mealMinutes[1] > 40) return false;
-      if (maxDistance && item.distance > Number(maxDistance)) return false;
-      return true;
+      if (keyword && !searchable.includes(keyword)) return [];
+      if (budget && item.priceMin > Number(budget)) return [];
+      if (cuisine !== 'all' && item.cuisineCode !== cuisine) return [];
+      if (onlySolo && !item.acceptsSolo) return [];
+      if (openNow && !item.openNow) return [];
+      if (fastMeal && item.mealMinutes[1] > 40) return [];
+      const restaurantLocation = normalizeToWgs84({ lat: item.latitude, lng: item.longitude }, item.mapCoordType);
+      const distance = distanceMeters(queryLocation, restaurantLocation);
+      if (maxDistance && distance > Number(maxDistance)) return [];
+      const result = { ...item, distance };
+      cache.set(result.id, { ...cache.get(result.id), ...result });
+      return [result];
     })
     .sort((left, right) => {
       const quietLeft = quietMode ? (5 - left.noiseLevel) * 3 : 0;

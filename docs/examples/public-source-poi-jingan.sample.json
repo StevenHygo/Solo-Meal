@@ -1,0 +1,30 @@
+{
+  "coverage_area_id": "sh-jingan-huangpu",
+  "provider": "public_source",
+  "source_label": "试点公开来源整理样例",
+  "authorization_basis": "仅用于一人食静安/黄浦试点链路演示；真实导入前必须替换为已确认可使用的公开页面、商户自有页面或授权数据说明。",
+  "observed_at": "2026-07-22T08:00:00.000+08:00",
+  "candidates": [
+    {
+      "source_url": "https://example.com/solo-meal-public-sample/shanmu-noodles",
+      "name": "杉木面所",
+      "address": "华山路 388 号 B1 层",
+      "district": "静安寺",
+      "lat": 31.2231,
+      "lng": 121.4452,
+      "coord_type": "gcj02",
+      "phone": "021-00000000",
+      "raw_category": "面馆"
+    },
+    {
+      "source_url": "https://example.com/solo-meal-public-sample/micang-set-meal",
+      "name": "米仓食堂",
+      "address": "愚园路 116 号",
+      "district": "静安寺",
+      "lat": 31.2257,
+      "lng": 121.4398,
+      "coord_type": "gcj02",
+      "raw_category": "日式简餐"
+    }
+  ]
+}
