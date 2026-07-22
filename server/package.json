@@ -15,7 +15,8 @@
     "validate": "pnpm run typecheck && pnpm run test",
     "db:migrate": "tsx src/db/migrate.ts up",
     "db:rollback": "tsx src/db/migrate.ts down",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "outbox:run": "tsx src/outbox/index.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

@@ -15,6 +15,7 @@
     "api:test": "pnpm --filter @solo-meal/api test",
     "db:migrate": "pnpm --filter @solo-meal/api db:migrate",
     "db:rollback": "pnpm --filter @solo-meal/api db:rollback",
-    "db:seed": "pnpm --filter @solo-meal/api db:seed"
+    "db:seed": "pnpm --filter @solo-meal/api db:seed",
+    "outbox:run": "pnpm --filter @solo-meal/api outbox:run"
   }
 }

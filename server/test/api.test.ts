@@ -84,6 +84,7 @@ test('CORS preflight allows browser draft updates with PUT', async () => {
     });
     assert.equal(response.statusCode, 204);
     assert.match(response.headers['access-control-allow-methods'] ?? '', /PUT/);
+    assert.match(response.headers['access-control-expose-headers'] ?? '', /Content-Disposition/i);
   } finally {
     await app.close();
   }
@@ -669,6 +670,79 @@ test('coverage quality report blocks fixture and missing manual evidence from pr
       .find((city: { code: string }) => city.code === 'shanghai').areas
       .find((area: { id: string }) => area.id === 'sh-xujiahui');
     assert.equal(xujiahui.status, 'upcoming');
+  } finally {
+    await app.close();
+  }
+});
+
+test('operations API exposes audit, delivery retry and bounded CSV exports', async () => {
+  const repository = new FixtureRepository();
+  const app = await createApp({ config, repository, clock: fixedNow });
+  const headers = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.delivery'
+  };
+  try {
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/feedback-reports',
+      payload: {
+        restaurant_id: 'r001', report_type: 'hours_incorrect', note: '周二午后没有营业',
+        idempotency_key: '7420ad5e-678a-4dfb-a2a0-c423c93554d5'
+      }
+    });
+    assert.equal(created.statusCode, 201);
+
+    const pending = await app.inject({
+      method: 'GET', url: '/api/v1/admin/outbox-events?status=pending', headers
+    });
+    assert.equal(pending.statusCode, 200);
+    assert.equal(pending.json().outbox_events.length, 1);
+    const eventId = pending.json().outbox_events[0].id;
+    const claimed = await repository.claimOutboxEvents({
+      workerId: 'worker-test', claimedAt: fixedNow(),
+      leaseExpiredBefore: new Date(fixedNow().getTime() - 60000), limit: 1
+    });
+    assert.equal(claimed[0]?.id, eventId);
+    await repository.failOutboxEvent({
+      eventId, workerId: 'worker-test', error: 'WEBHOOK_HTTP_503', failedAt: fixedNow(),
+      nextAvailableAt: fixedNow(), maxAttempts: 1
+    });
+
+    const failed = await app.inject({
+      method: 'GET', url: '/api/v1/admin/outbox-events?status=failed', headers
+    });
+    assert.equal(failed.json().outbox_events[0].last_error, 'WEBHOOK_HTTP_503');
+    const retried = await app.inject({
+      method: 'POST', url: `/api/v1/admin/outbox-events/${eventId}/retry`, headers, payload: {}
+    });
+    assert.equal(retried.statusCode, 200);
+    assert.equal(retried.json().outbox_event.status, 'pending');
+
+    const retryAudit = await app.inject({
+      method: 'GET', url: '/api/v1/admin/audit-logs?entity_type=outbox_event', headers
+    });
+    assert.equal(retryAudit.statusCode, 200);
+    assert.equal(retryAudit.json().audit_logs.length, 1);
+    assert.equal(retryAudit.json().audit_logs[0].action, 'retry');
+
+    const allEvents = await app.inject({
+      method: 'GET', url: '/api/v1/admin/outbox-events', headers
+    });
+    assert.equal(allEvents.json().outbox_events.length, 1);
+
+    const csv = await app.inject({
+      method: 'GET', url: '/api/v1/admin/exports/audit_logs.csv?limit=100', headers
+    });
+    assert.equal(csv.statusCode, 200);
+    assert.match(csv.headers['content-type'] ?? '', /text\/csv/);
+    assert.match(csv.headers['content-disposition'] ?? '', /solo-meal-audit_logs-2026-07-21\.csv/);
+    assert.match(csv.body, /operator\.delivery/);
+    assert.doesNotMatch(csv.body, /before_value|after_value|WEBHOOK_HTTP_503/);
+
+    const unauthorized = await app.inject({
+      method: 'GET', url: '/api/v1/admin/exports/restaurants.csv'
+    });
+    assert.equal(unauthorized.statusCode, 401);
   } finally {
     await app.close();
   }

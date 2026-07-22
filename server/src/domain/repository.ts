@@ -3,6 +3,16 @@ import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, Eviden
 import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiImportReceipt, PoiImportSubmission } from './poi.js';
 import type { CoverageQualityManualUpdate, CoverageQualityRecord } from './coverage-quality.js';
 import type { ManagedRestaurantQuery, ManagedRestaurantRecord, RestaurantDraftSave, RestaurantPublicationTransition } from './publishing.js';
+import type {
+  AuditLogQuery,
+  AuditLogRecord,
+  OperationsExport,
+  OperationsExportDataset,
+  OutboxClaim,
+  OutboxEventQuery,
+  OutboxEventRecord,
+  OutboxFailure
+} from './operations-control.js';
 
 export interface RestaurantHours extends HoursInterval {
   dayOfWeek: number | null;
@@ -87,5 +97,12 @@ export interface RestaurantRepository {
   transitionManagedRestaurant(id: string, transition: RestaurantPublicationTransition): Promise<ManagedRestaurantRecord>;
   getCoverageQuality(areaId: string, at: Date): Promise<CoverageQualityRecord>;
   updateCoverageQuality(areaId: string, update: CoverageQualityManualUpdate): Promise<CoverageQualityRecord>;
+  listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]>;
+  listOutboxEvents(query: OutboxEventQuery): Promise<OutboxEventRecord[]>;
+  claimOutboxEvents(claim: OutboxClaim): Promise<OutboxEventRecord[]>;
+  completeOutboxEvent(id: string, workerId: string, completedAt: Date): Promise<void>;
+  failOutboxEvent(failure: OutboxFailure): Promise<OutboxEventRecord>;
+  retryOutboxEvent(id: string, actorId: string, retriedAt: Date): Promise<OutboxEventRecord>;
+  exportOperationsData(dataset: OperationsExportDataset, limit: number): Promise<OperationsExport>;
   close(): Promise<void>;
 }

@@ -5,6 +5,17 @@ import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, Eviden
 import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiImportReceipt, PoiImportSubmission } from '../domain/poi.js';
 import type { CoverageQualityManualUpdate, CoverageQualityRecord } from '../domain/coverage-quality.js';
 import type { ManagedRestaurantQuery, ManagedRestaurantRecord, RestaurantDraftSave, RestaurantPublicationTransition } from '../domain/publishing.js';
+import type {
+  AuditLogQuery,
+  AuditLogRecord,
+  AuditValue,
+  OperationsExport,
+  OperationsExportDataset,
+  OutboxClaim,
+  OutboxEventQuery,
+  OutboxEventRecord,
+  OutboxFailure
+} from '../domain/operations-control.js';
 import type { City, Coordinate, CoverageArea, LocationSuggestion, RestaurantFixture } from '../domain/types.js';
 import { v0Restaurants } from '../fixtures/v0-restaurants.js';
 import { normalizeToWgs84 } from '../geo/coordinates.js';
@@ -100,6 +111,52 @@ export class FixtureRepository implements RestaurantRepository {
   private readonly providerRefs = new Map<string, string>();
   private readonly manualCoverageQuality = new Map<string, Partial<CoverageQualityRecord['metrics']>>();
   private readonly managedRestaurants = new Map<string, ManagedRestaurantRecord>();
+  private readonly auditLogs: AuditLogRecord[] = [];
+  private readonly outboxEvents = new Map<string, OutboxEventRecord>();
+  private auditSequence = 0;
+
+  private recordOperation(input: {
+    actorId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    reason: string;
+    beforeValue?: AuditValue;
+    afterValue?: AuditValue;
+    topic: string;
+    payload: Record<string, unknown>;
+    at: Date;
+  }): void {
+    const createdAt = input.at.toISOString();
+    this.auditSequence += 1;
+    this.auditLogs.push({
+      id: String(this.auditSequence),
+      actorId: input.actorId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      reason: input.reason,
+      beforeValue: input.beforeValue ?? null,
+      afterValue: input.afterValue ?? null,
+      createdAt
+    });
+    const id = randomUUID();
+    this.outboxEvents.set(id, {
+      id,
+      topic: input.topic,
+      aggregateId: input.entityId,
+      payload: structuredClone(input.payload),
+      status: 'pending',
+      availableAt: createdAt,
+      processedAt: null,
+      attempts: 0,
+      lastError: null,
+      failedAt: null,
+      lockedBy: null,
+      lockedAt: null,
+      createdAt
+    });
+  }
 
   async health(): Promise<RepositoryHealth> {
     return { ok: true, source: 'fixture', latencyMs: 0 };
@@ -193,6 +250,12 @@ export class FixtureRepository implements RestaurantRepository {
       createdAt: receivedAt,
       updatedAt: receivedAt
     });
+    this.recordOperation({
+      actorId: 'public-feedback', action: 'create', entityType: 'feedback_report', entityId: reportId,
+      reason: 'user_submitted_correction',
+      afterValue: { restaurant_id: restaurant.id, report_type: input.reportType, task_id: taskId },
+      topic: 'feedback.created', payload: { report_id: reportId, task_id: taskId }, at: input.submittedAt
+    });
     return receipt;
   }
 
@@ -222,10 +285,17 @@ export class FixtureRepository implements RestaurantRepository {
       updatedAt: update.updatedAt.toISOString()
     };
     this.tasks.set(id, next);
+    this.recordOperation({
+      actorId: update.actorId, action: 'transition', entityType: 'curation_task', entityId: id,
+      reason: 'operator_task_update',
+      beforeValue: { status: task.status, assignee: task.assignee, resolution_note: task.resolutionNote },
+      afterValue: { status: next.status, assignee: next.assignee, resolution_note: next.resolutionNote },
+      topic: 'curation.task_updated', payload: { task_id: id, status: next.status }, at: update.updatedAt
+    });
     return structuredClone(next);
   }
 
-  async sweepExpiredEvidence(at: Date, _actorId: string): Promise<EvidenceSweepResult> {
+  async sweepExpiredEvidence(at: Date, actorId: string): Promise<EvidenceSweepResult> {
     const affectedRestaurants = new Set<string>();
     let expiredEvidence = 0;
     const restaurants = [
@@ -278,6 +348,14 @@ export class FixtureRepository implements RestaurantRepository {
         updatedAt: timestamp
       });
       createdTasks += 1;
+    }
+    if (expiredEvidence > 0 || createdTasks > 0) {
+      const payload = { expired_evidence: expiredEvidence, created_tasks: createdTasks };
+      this.recordOperation({
+        actorId, action: 'expire', entityType: 'evidence_batch', entityId: at.toISOString(),
+        reason: 'scheduled_freshness_sweep', afterValue: payload,
+        topic: 'evidence.expired', payload, at
+      });
     }
     return { expiredEvidence, createdTasks, processedAt: at.toISOString() };
   }
@@ -370,6 +448,20 @@ export class FixtureRepository implements RestaurantRepository {
       importedAt: input.importedAt.toISOString()
     };
     this.poiImportsByKey.set(input.idempotencyKey, { payloadSha256: input.payloadSha256, receipt });
+    const operationPayload = {
+      batch_id: receipt.batchId,
+      provider: input.provider,
+      coverage_area_id: input.coverageAreaId,
+      input_count: input.candidates.length,
+      created_count: createdCount,
+      updated_count: updatedCount,
+      exact_match_count: exactMatchCount
+    };
+    this.recordOperation({
+      actorId: input.actorId, action: 'import', entityType: 'poi_import_batch', entityId: receipt.batchId,
+      reason: 'authorized_poi_import', afterValue: operationPayload,
+      topic: 'poi.imported', payload: operationPayload, at: input.importedAt
+    });
     return receipt;
   }
 
@@ -425,6 +517,13 @@ export class FixtureRepository implements RestaurantRepository {
       reviewedAt: review.reviewedAt.toISOString()
     };
     this.poiCandidates.set(id, next);
+    this.recordOperation({
+      actorId: review.actorId, action: 'review', entityType: 'poi_candidate', entityId: id,
+      reason: 'operator_poi_decision',
+      beforeValue: { status: candidate.status, matched_restaurant_id: candidate.matchedRestaurantId },
+      afterValue: { status: next.status, matched_restaurant_id: next.matchedRestaurantId, resolution_note: next.resolutionNote },
+      topic: 'poi.candidate_reviewed', payload: { candidate_id: id, status: next.status }, at: review.reviewedAt
+    });
     return structuredClone(next);
   }
 
@@ -503,6 +602,15 @@ export class FixtureRepository implements RestaurantRepository {
       draftRestaurantId: id,
       draftRestaurantStatus: 'draft'
     });
+    const operationPayload = {
+      restaurant_id: id, candidate_id: candidateId, provider: candidate.provider,
+      provider_poi_id: candidate.providerPoiId, status: 'draft', version: 1
+    };
+    this.recordOperation({
+      actorId: draft.actorId, action: 'create_draft', entityType: 'restaurant', entityId: id,
+      reason: 'poi_new_branch_draft', afterValue: operationPayload,
+      topic: 'restaurant.draft_created', payload: operationPayload, at: draft.savedAt
+    });
     return structuredClone(managed);
   }
 
@@ -553,6 +661,13 @@ export class FixtureRepository implements RestaurantRepository {
       updatedAt: draft.savedAt.toISOString()
     };
     this.managedRestaurants.set(id, next);
+    const afterValue = { status: 'draft', version: next.version, name: draft.name, address: draft.address, district: draft.district };
+    this.recordOperation({
+      actorId: draft.actorId, action: 'update_draft', entityType: 'restaurant', entityId: id,
+      reason: 'operator_draft_edit',
+      beforeValue: { status: current.publishStatus, version: current.version, name: current.restaurant.name, address: current.restaurant.address, district: current.restaurant.district },
+      afterValue, topic: 'restaurant.draft_updated', payload: { restaurant_id: id, ...afterValue }, at: draft.savedAt
+    });
     return structuredClone(next);
   }
 
@@ -643,6 +758,14 @@ export class FixtureRepository implements RestaurantRepository {
       const candidate = this.poiCandidates.get(current.sourceCandidate.id);
       if (candidate) this.poiCandidates.set(candidate.id, { ...candidate, draftRestaurantStatus: nextStatus });
     }
+    const afterValue = { status: nextStatus, note: transition.note };
+    this.recordOperation({
+      actorId: transition.actorId, action: transition.action, entityType: 'restaurant', entityId: id,
+      reason: 'restaurant_publication_transition',
+      beforeValue: { status: current.publishStatus, version: current.version }, afterValue,
+      topic: 'restaurant.publication_transitioned',
+      payload: { restaurant_id: id, action: transition.action, ...afterValue }, at: transition.transitionedAt
+    });
     return structuredClone(next);
   }
 
@@ -700,7 +823,7 @@ export class FixtureRepository implements RestaurantRepository {
     const coverage = await this.getCoverageArea(areaId);
     if (!coverage) throw new Error('COVERAGE_AREA_NOT_FOUND');
     const current = this.manualCoverageQuality.get(areaId) ?? {};
-    this.manualCoverageQuality.set(areaId, {
+    const next = {
       ...current,
       ...(update.searchSampleCoverageRate !== undefined ? { searchSampleCoverageRate: update.searchSampleCoverageRate } : {}),
       ...(update.branchMismatchRate !== undefined ? { branchMismatchRate: update.branchMismatchRate } : {}),
@@ -709,8 +832,180 @@ export class FixtureRepository implements RestaurantRepository {
       ...(update.providerTermsReviewed !== undefined ? { providerTermsReviewed: update.providerTermsReviewed } : {}),
       ...(update.privacyReviewed !== undefined ? { privacyReviewed: update.privacyReviewed } : {}),
       ...(update.postgisRehearsalPassed !== undefined ? { postgisRehearsalPassed: update.postgisRehearsalPassed } : {})
+    };
+    this.manualCoverageQuality.set(areaId, next);
+    this.recordOperation({
+      actorId: update.actorId, action: 'update_quality', entityType: 'coverage_area', entityId: areaId,
+      reason: update.evidenceNote, beforeValue: current, afterValue: next,
+      topic: 'coverage.quality_updated', payload: { coverage_area_id: areaId, quality_metrics: next }, at: update.updatedAt
     });
     return this.getCoverageQuality(areaId, update.updatedAt);
+  }
+
+  async listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]> {
+    return this.auditLogs
+      .filter(log => query.actorId === null || log.actorId === query.actorId)
+      .filter(log => query.action === null || log.action === query.action)
+      .filter(log => query.entityType === null || log.entityType === query.entityType)
+      .filter(log => query.entityId === null || log.entityId === query.entityId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || Number(right.id) - Number(left.id))
+      .slice(0, query.limit)
+      .map(log => structuredClone(log));
+  }
+
+  async listOutboxEvents(query: OutboxEventQuery): Promise<OutboxEventRecord[]> {
+    return [...this.outboxEvents.values()]
+      .filter(event => query.status === null || event.status === query.status)
+      .filter(event => query.topic === null || event.topic === query.topic)
+      .filter(event => query.aggregateId === null || event.aggregateId === query.aggregateId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id))
+      .slice(0, query.limit)
+      .map(event => structuredClone(event));
+  }
+
+  async claimOutboxEvents(claim: OutboxClaim): Promise<OutboxEventRecord[]> {
+    const claimedAt = claim.claimedAt.toISOString();
+    const leaseExpiredBefore = claim.leaseExpiredBefore.toISOString();
+    const candidates = [...this.outboxEvents.values()]
+      .filter(event => (event.status === 'pending' && event.availableAt <= claimedAt)
+        || (event.status === 'processing' && event.lockedAt !== null && event.lockedAt <= leaseExpiredBefore))
+      .sort((left, right) => left.availableAt.localeCompare(right.availableAt)
+        || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+      .slice(0, claim.limit);
+    return candidates.map(event => {
+      const next: OutboxEventRecord = {
+        ...event,
+        status: 'processing',
+        attempts: event.attempts + 1,
+        lockedBy: claim.workerId,
+        lockedAt: claimedAt
+      };
+      this.outboxEvents.set(event.id, next);
+      return structuredClone(next);
+    });
+  }
+
+  async completeOutboxEvent(id: string, workerId: string, completedAt: Date): Promise<void> {
+    const event = this.outboxEvents.get(id);
+    if (!event || event.status !== 'processing' || event.lockedBy !== workerId) throw new Error('OUTBOX_LEASE_LOST');
+    this.outboxEvents.set(id, {
+      ...event,
+      status: 'processed',
+      processedAt: completedAt.toISOString(),
+      lastError: null,
+      failedAt: null,
+      lockedBy: null,
+      lockedAt: null
+    });
+  }
+
+  async failOutboxEvent(failure: OutboxFailure): Promise<OutboxEventRecord> {
+    const event = this.outboxEvents.get(failure.eventId);
+    if (!event || event.status !== 'processing' || event.lockedBy !== failure.workerId) throw new Error('OUTBOX_LEASE_LOST');
+    const terminal = event.attempts >= failure.maxAttempts;
+    const next: OutboxEventRecord = {
+      ...event,
+      status: terminal ? 'failed' : 'pending',
+      availableAt: failure.nextAvailableAt.toISOString(),
+      lastError: failure.error,
+      failedAt: terminal ? failure.failedAt.toISOString() : null,
+      lockedBy: null,
+      lockedAt: null
+    };
+    this.outboxEvents.set(event.id, next);
+    return structuredClone(next);
+  }
+
+  async retryOutboxEvent(id: string, actorId: string, retriedAt: Date): Promise<OutboxEventRecord> {
+    const event = this.outboxEvents.get(id);
+    if (!event) throw new Error('OUTBOX_EVENT_NOT_FOUND');
+    if (event.status !== 'failed') throw new Error('OUTBOX_EVENT_NOT_FAILED');
+    const next: OutboxEventRecord = {
+      ...event,
+      status: 'pending',
+      availableAt: retriedAt.toISOString(),
+      processedAt: null,
+      lastError: null,
+      failedAt: null,
+      lockedBy: null,
+      lockedAt: null
+    };
+    this.outboxEvents.set(id, next);
+    this.auditSequence += 1;
+    this.auditLogs.push({
+      id: String(this.auditSequence),
+      actorId,
+      action: 'retry',
+      entityType: 'outbox_event',
+      entityId: id,
+      reason: 'operator_manual_retry',
+      beforeValue: { status: event.status, attempts: event.attempts, last_error: event.lastError },
+      afterValue: { status: next.status, attempts: next.attempts },
+      createdAt: retriedAt.toISOString()
+    });
+    return structuredClone(next);
+  }
+
+  async exportOperationsData(dataset: OperationsExportDataset, limit: number): Promise<OperationsExport> {
+    if (dataset === 'restaurants') {
+      const managed = [...this.managedRestaurants.values()].map(item => ({
+        id: item.restaurant.id,
+        legacyId: item.restaurant.legacyId,
+        cityCode: item.restaurant.cityCode,
+        coverageAreaId: item.restaurant.coverageArea.id,
+        name: item.restaurant.name,
+        publishStatus: item.publishStatus,
+        primaryCuisineCode: item.restaurant.primaryCuisineCode,
+        priceMinFen: item.restaurant.priceMinFen,
+        priceMaxFen: item.restaurant.priceMaxFen,
+        acceptsSolo: item.restaurant.acceptsSolo,
+        updatedAt: item.updatedAt
+      }));
+      const fixtures = v0Restaurants.map(item => ({
+        id: item.id,
+        legacyId: item.legacyId,
+        cityCode: item.cityCode,
+        coverageAreaId: item.coverageAreaId,
+        name: item.name,
+        publishStatus: 'published',
+        primaryCuisineCode: item.primaryCuisineCode,
+        priceMinFen: item.priceMinFen,
+        priceMaxFen: item.priceMaxFen,
+        acceptsSolo: item.acceptsSolo,
+        updatedAt: item.lastVerifiedAt
+      }));
+      const columns = ['id', 'legacy_id', 'city_code', 'coverage_area_id', 'name', 'publish_status', 'primary_cuisine_code', 'price_min_fen', 'price_max_fen', 'accepts_solo', 'updated_at'];
+      const rows = [...managed, ...fixtures]
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, limit)
+        .map(item => [item.id, item.legacyId, item.cityCode, item.coverageAreaId, item.name, item.publishStatus,
+          item.primaryCuisineCode, item.priceMinFen, item.priceMaxFen, item.acceptsSolo, item.updatedAt]);
+      return { columns, rows };
+    }
+    if (dataset === 'poi_candidates') {
+      const columns = ['id', 'provider', 'provider_poi_id', 'city_code', 'coverage_area_id', 'name', 'address', 'status', 'matched_restaurant_id', 'suggestion_score', 'reviewed_by', 'reviewed_at', 'last_seen_at'];
+      const rows = [...this.poiCandidates.values()]
+        .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))
+        .slice(0, limit)
+        .map(item => [item.id, item.provider, item.providerPoiId, item.cityCode, item.coverageAreaId, item.name,
+          item.address, item.status, item.matchedRestaurantId, item.suggestionScore, item.reviewedBy, item.reviewedAt, item.lastSeenAt]);
+      return { columns, rows };
+    }
+    if (dataset === 'curation_tasks') {
+      const columns = ['id', 'city_code', 'restaurant_id', 'feedback_report_id', 'reason', 'priority', 'status', 'assignee', 'due_at', 'created_at', 'updated_at'];
+      const rows = [...this.tasks.values()]
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, limit)
+        .map(item => [item.id, item.cityCode, item.restaurantId, item.feedbackReportId, item.reason,
+          item.priority, item.status, item.assignee, item.dueAt, item.createdAt, item.updatedAt]);
+      return { columns, rows };
+    }
+    const columns = ['id', 'actor_id', 'action', 'entity_type', 'entity_id', 'reason', 'created_at'];
+    const rows = this.auditLogs.slice()
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit)
+      .map(item => [item.id, item.actorId, item.action, item.entityType, item.entityId, item.reason, item.createdAt]);
+    return { columns, rows };
   }
 
   async close(): Promise<void> {}

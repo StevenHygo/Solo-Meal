@@ -69,10 +69,22 @@
 | `POST` | `/api/v1/admin/restaurants/:id/transitions` | 提交审核、退回修改、发布或撤回 |
 | `GET` | `/api/v1/admin/coverage/:id/quality` | 读取数据库指标和准入检查 |
 | `PATCH` | `/api/v1/admin/coverage/:id/quality` | 记录人工抽样、条款和演练指标 |
+| `GET` | `/api/v1/admin/audit-logs` | 按操作人、动作或实体筛选审计记录 |
+| `GET` | `/api/v1/admin/outbox-events` | 按状态、主题或聚合 ID 查看投递事件 |
+| `POST` | `/api/v1/admin/outbox-events/:id/retry` | 把失败事件人工重新置为待投递 |
+| `GET` | `/api/v1/admin/exports/:dataset.csv` | 导出最多 1000 行固定字段数据 |
 
 运营台地址为 `/ops/`。令牌只保存在当前页面内存，不写入浏览器存储；非本机 API 必须使用 HTTPS。
 
-## 5. 餐厅发布状态
+## 5. Outbox 投递与导出
+
+- API 进程不自动消费 Outbox；使用 `pnpm outbox:run` 启动独立 one-shot Worker，并由外部调度器控制频率。
+- PostgreSQL 领取使用 `FOR UPDATE SKIP LOCKED`，写入 Worker 租约并增加尝试次数；超时租约可被其他 Worker 回收。
+- 失败按指数退避，达到最大次数后进入 `failed`；人工重试只允许 `failed -> pending`，写审计但不再产生 Outbox。
+- Webhook 在生产环境只允许 HTTPS，投递 Token 与运营 Token 分离，错误只保存经过截断和换行清洗的信息。
+- CSV 只允许 `restaurants`、`poi_candidates`、`curation_tasks`、`audit_logs` 四个数据集，最多 1000 行；审计导出不包含修改前后 JSON，所有字符串按 CSV 公式注入规则转义。
+
+## 6. 餐厅发布状态
 
 ```text
 new_branch -> draft -> review -> published -> withdrawn
@@ -86,7 +98,7 @@ new_branch -> draft -> review -> published -> withdrawn
 - 发布事务同时写入 Provider 映射、发布证据、候选匹配、审计和 Outbox；任一步失败即回滚。
 - `withdraw` 会立即把餐厅移出公开搜索。发布或撤回不会自动修改覆盖区域的 `upcoming` / `beta` / `live` 状态。
 
-## 6. Beta 准入
+## 7. Beta 准入
 
 `coverage-beta-v1` 所有条件必须同时满足：
 
@@ -104,15 +116,15 @@ new_branch -> draft -> review -> published -> withdrawn
 | 严重数据质量事故连续无发生 | `>= 2 周` | 人工记录 |
 | Provider 条款、隐私、PostGIS 迁移回滚演练 | 全部通过 | 人工记录 |
 
-## 7. Live 准入
+## 8. Live 准入
 
 `coverage-live-v1` 保留 v1 设计的更高门槛：至少 100 家已发布餐厅、2 公里测试点覆盖率不低于 80%、90 天核验率不低于 70%、核心字段完整率不低于 85%、分店错配率不高于 1%、到店符合率不低于 75%、高优纠错五工作日处理率不低于 90%，并连续两周无严重事故。另要求 Provider ID 关联率不低于 95%、无高置信重复待处理，以及三项条款/演练全部通过。
 
-## 8. 当前状态
+## 9. 当前状态
 
 - 仓库没有已授权的真实地图 Provider 数据或生产凭据。
 - 徐家汇、淮海中路等新增区域没有已发布餐厅、抽样记录或 PostGIS 演练证据，必须保持 `upcoming`。
 - 静安/黄浦的 6 条 v0 兼容 fixture 只用于回归，不满足 `coverage-beta-v1`，不能作为真实覆盖证明。
 - 核心字段/证据录入、双人审核、发布和撤回已在 fixture、PostgreSQL 事务测试及浏览器闭环中实现。
-- 真实 Provider Adapter、批量导出/失败重试和生产 MFA/RBAC 仍待完成。
+- 审计浏览、批量导出、数据库租约 Worker 和失败重试已实现；真实 Provider Adapter、覆盖区域开关和生产 MFA/RBAC 仍待完成。
 - 真实 PostgreSQL/PostGIS 迁移、空间索引、备份恢复和回滚仍需在具备 Docker 或 `psql` 的环境执行。

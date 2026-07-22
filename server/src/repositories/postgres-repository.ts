@@ -3,6 +3,19 @@ import type { CurationTaskRecord, CurationTaskStatus, CurationTaskUpdate, Eviden
 import type { PoiCandidateQuery, PoiCandidateRecord, PoiCandidateReview, PoiCandidateStatus, PoiImportReceipt, PoiImportSubmission } from '../domain/poi.js';
 import type { CoverageQualityManualUpdate, CoverageQualityRecord } from '../domain/coverage-quality.js';
 import type { ManagedRestaurantQuery, ManagedRestaurantRecord, RestaurantDraftSave, RestaurantPublicationTransition, RestaurantPublishStatus } from '../domain/publishing.js';
+import type {
+  AuditLogQuery,
+  AuditLogRecord,
+  AuditValue,
+  OperationsExport,
+  OperationsExportDataset,
+  OperationsExportValue,
+  OutboxClaim,
+  OutboxEventQuery,
+  OutboxEventRecord,
+  OutboxFailure,
+  OutboxStatus
+} from '../domain/operations-control.js';
 import type { City, CoverageArea, LocationSuggestion } from '../domain/types.js';
 import { rankingConfig } from '../catalog.js';
 import { withTransaction, type DatabaseClient, type DatabasePool } from '../db/pool.js';
@@ -126,6 +139,83 @@ interface ManagedRestaurantRow extends RestaurantRow {
   source_provider: string | null;
   source_provider_poi_id: string | null;
 }
+
+interface AuditLogRow {
+  id: string;
+  actor_id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  reason: string;
+  before_value: AuditValue;
+  after_value: AuditValue;
+  created_at: string;
+}
+
+interface OutboxEventRow {
+  id: string;
+  topic: string;
+  aggregate_id: string;
+  payload: Record<string, unknown>;
+  status: OutboxStatus;
+  available_at: string;
+  processed_at: string | null;
+  attempts: number;
+  last_error: string | null;
+  failed_at: string | null;
+  locked_by: string | null;
+  locked_at: string | null;
+  created_at: string;
+}
+
+interface OperationsExportRow {
+  [column: string]: OperationsExportValue;
+}
+
+function mapAuditLog(row: AuditLogRow): AuditLogRecord {
+  return {
+    id: row.id,
+    actorId: row.actor_id,
+    action: row.action,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    reason: row.reason,
+    beforeValue: row.before_value,
+    afterValue: row.after_value,
+    createdAt: row.created_at
+  };
+}
+
+function mapOutboxEvent(row: OutboxEventRow): OutboxEventRecord {
+  return {
+    id: row.id,
+    topic: row.topic,
+    aggregateId: row.aggregate_id,
+    payload: row.payload,
+    status: row.status,
+    availableAt: row.available_at,
+    processedAt: row.processed_at,
+    attempts: row.attempts,
+    lastError: row.last_error,
+    failedAt: row.failed_at,
+    lockedBy: row.locked_by,
+    lockedAt: row.locked_at,
+    createdAt: row.created_at
+  };
+}
+
+const auditLogSelect = `
+  SELECT id::text, actor_id, action, entity_type, entity_id, reason,
+    before_value, after_value, created_at::text
+  FROM audit_logs
+`;
+
+const outboxEventSelect = `
+  SELECT id, topic, aggregate_id, payload, status, available_at::text,
+    processed_at::text, attempts, last_error, failed_at::text,
+    locked_by, locked_at::text, created_at::text
+  FROM outbox_events
+`;
 
 function mapCurationTask(row: CurationTaskRow): CurationTaskRecord {
   return {
@@ -1176,6 +1266,164 @@ export class PostgresRepository implements RestaurantRepository {
       `, [areaId, JSON.stringify({ coverage_area_id: areaId, quality_metrics: next }), update.updatedAt]);
     });
     return this.getCoverageQuality(areaId, update.updatedAt);
+  }
+
+  async listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]> {
+    const result = await this.pool.query<AuditLogRow>(`${auditLogSelect}
+      WHERE ($1::text IS NULL OR actor_id = $1)
+        AND ($2::text IS NULL OR action = $2)
+        AND ($3::text IS NULL OR entity_type = $3)
+        AND ($4::text IS NULL OR entity_id = $4)
+      ORDER BY created_at DESC, id DESC LIMIT $5
+    `, [query.actorId, query.action, query.entityType, query.entityId, query.limit]);
+    return result.rows.map(mapAuditLog);
+  }
+
+  async listOutboxEvents(query: OutboxEventQuery): Promise<OutboxEventRecord[]> {
+    const result = await this.pool.query<OutboxEventRow>(`${outboxEventSelect}
+      WHERE ($1::text IS NULL OR status = $1)
+        AND ($2::text IS NULL OR topic = $2)
+        AND ($3::text IS NULL OR aggregate_id = $3)
+      ORDER BY created_at DESC, id LIMIT $4
+    `, [query.status, query.topic, query.aggregateId, query.limit]);
+    return result.rows.map(mapOutboxEvent);
+  }
+
+  async claimOutboxEvents(claim: OutboxClaim): Promise<OutboxEventRecord[]> {
+    const result = await this.pool.query<OutboxEventRow>(`
+      WITH candidates AS (
+        SELECT id FROM outbox_events
+        WHERE (status = 'pending' AND available_at <= $2)
+          OR (status = 'processing' AND locked_at IS NOT NULL AND locked_at <= $3)
+        ORDER BY available_at, created_at, id
+        FOR UPDATE SKIP LOCKED
+        LIMIT $4
+      )
+      UPDATE outbox_events event
+      SET status = 'processing', locked_by = $1, locked_at = $2,
+        attempts = event.attempts + 1
+      FROM candidates WHERE event.id = candidates.id
+      RETURNING event.id, event.topic, event.aggregate_id, event.payload, event.status,
+        event.available_at::text, event.processed_at::text, event.attempts,
+        event.last_error, event.failed_at::text, event.locked_by,
+        event.locked_at::text, event.created_at::text
+    `, [claim.workerId, claim.claimedAt, claim.leaseExpiredBefore, claim.limit]);
+    return result.rows.map(mapOutboxEvent)
+      .sort((left, right) => left.availableAt.localeCompare(right.availableAt)
+        || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  async completeOutboxEvent(id: string, workerId: string, completedAt: Date): Promise<void> {
+    const result = await this.pool.query<{ id: string }>(`
+      UPDATE outbox_events
+      SET status = 'processed', processed_at = $3, last_error = NULL,
+        failed_at = NULL, locked_by = NULL, locked_at = NULL
+      WHERE id = $1 AND status = 'processing' AND locked_by = $2
+      RETURNING id
+    `, [id, workerId, completedAt]);
+    if (!result.rows[0]) throw new Error('OUTBOX_LEASE_LOST');
+  }
+
+  async failOutboxEvent(failure: OutboxFailure): Promise<OutboxEventRecord> {
+    const result = await this.pool.query<OutboxEventRow>(`
+      UPDATE outbox_events
+      SET status = CASE WHEN attempts >= $5 THEN 'failed' ELSE 'pending' END,
+        available_at = $4, last_error = $3,
+        failed_at = CASE WHEN attempts >= $5 THEN $6 ELSE NULL END,
+        locked_by = NULL, locked_at = NULL
+      WHERE id = $1 AND status = 'processing' AND locked_by = $2
+      RETURNING id, topic, aggregate_id, payload, status, available_at::text,
+        processed_at::text, attempts, last_error, failed_at::text,
+        locked_by, locked_at::text, created_at::text
+    `, [failure.eventId, failure.workerId, failure.error, failure.nextAvailableAt,
+      failure.maxAttempts, failure.failedAt]);
+    const event = result.rows[0];
+    if (!event) throw new Error('OUTBOX_LEASE_LOST');
+    return mapOutboxEvent(event);
+  }
+
+  async retryOutboxEvent(id: string, actorId: string, retriedAt: Date): Promise<OutboxEventRecord> {
+    return withTransaction(this.pool, async client => {
+      const currentResult = await client.query<OutboxEventRow>(`${outboxEventSelect}
+        WHERE id = $1 FOR UPDATE
+      `, [id]);
+      const current = currentResult.rows[0];
+      if (!current) throw new Error('OUTBOX_EVENT_NOT_FOUND');
+      if (current.status !== 'failed') throw new Error('OUTBOX_EVENT_NOT_FAILED');
+      const updatedResult = await client.query<OutboxEventRow>(`
+        UPDATE outbox_events
+        SET status = 'pending', available_at = $2, processed_at = NULL,
+          last_error = NULL, failed_at = NULL, locked_by = NULL, locked_at = NULL
+        WHERE id = $1
+        RETURNING id, topic, aggregate_id, payload, status, available_at::text,
+          processed_at::text, attempts, last_error, failed_at::text,
+          locked_by, locked_at::text, created_at::text
+      `, [id, retriedAt]);
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, 'retry', 'outbox_event', $2, 'operator_manual_retry', $3::jsonb, $4::jsonb, $5)
+      `, [actorId, id,
+        JSON.stringify({ status: current.status, attempts: current.attempts, last_error: current.last_error }),
+        JSON.stringify({ status: 'pending', attempts: current.attempts }), retriedAt]);
+      const updated = updatedResult.rows[0];
+      if (!updated) throw new Error('OUTBOX_EVENT_NOT_FOUND');
+      return mapOutboxEvent(updated);
+    });
+  }
+
+  async exportOperationsData(dataset: OperationsExportDataset, limit: number): Promise<OperationsExport> {
+    const definitions: Record<OperationsExportDataset, { columns: string[]; sql: string }> = {
+      restaurants: {
+        columns: ['id', 'legacy_id', 'city_code', 'coverage_area_id', 'name', 'publish_status', 'primary_cuisine_code', 'price_min_fen', 'price_max_fen', 'accepts_solo', 'updated_at'],
+        sql: `
+          SELECT r.id::text, r.legacy_id, c.code AS city_code, r.coverage_area_id::text,
+            r.name, r.publish_status::text, primary_cuisine.cuisine_code AS primary_cuisine_code,
+            r.price_min_fen, r.price_max_fen, sp.accepts_solo, r.updated_at::text
+          FROM restaurants r
+          JOIN cities c ON c.id = r.city_id
+          LEFT JOIN restaurant_cuisines primary_cuisine
+            ON primary_cuisine.restaurant_id = r.id AND primary_cuisine.is_primary
+          LEFT JOIN solo_profiles sp ON sp.restaurant_id = r.id
+          ORDER BY r.updated_at DESC, r.id LIMIT $1
+        `
+      },
+      poi_candidates: {
+        columns: ['id', 'provider', 'provider_poi_id', 'city_code', 'coverage_area_id', 'name', 'address', 'status', 'matched_restaurant_id', 'suggestion_score', 'reviewed_by', 'reviewed_at', 'last_seen_at'],
+        sql: `
+          SELECT pc.id::text, pc.provider, pc.provider_poi_id, c.code AS city_code,
+            pc.coverage_area_id::text, pc.name, pc.address, pc.status::text,
+            pc.matched_restaurant_id::text, pc.suggestion_score::double precision,
+            pc.reviewed_by, pc.reviewed_at::text, pc.last_seen_at::text
+          FROM poi_candidates pc
+          JOIN coverage_areas ca ON ca.id = pc.coverage_area_id
+          JOIN cities c ON c.id = ca.city_id
+          ORDER BY pc.last_seen_at DESC, pc.id LIMIT $1
+        `
+      },
+      curation_tasks: {
+        columns: ['id', 'city_code', 'restaurant_id', 'feedback_report_id', 'reason', 'priority', 'status', 'assignee', 'due_at', 'created_at', 'updated_at'],
+        sql: `
+          SELECT t.id::text, c.code AS city_code, t.restaurant_id::text,
+            t.feedback_report_id::text, t.reason, t.priority, t.status::text,
+            t.assignee, t.due_at::text, t.created_at::text, t.updated_at::text
+          FROM curation_tasks t JOIN cities c ON c.id = t.city_id
+          ORDER BY t.updated_at DESC, t.id LIMIT $1
+        `
+      },
+      audit_logs: {
+        columns: ['id', 'actor_id', 'action', 'entity_type', 'entity_id', 'reason', 'created_at'],
+        sql: `
+          SELECT id::text, actor_id, action, entity_type, entity_id, reason, created_at::text
+          FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT $1
+        `
+      }
+    };
+    const definition = definitions[dataset];
+    const result = await this.pool.query<OperationsExportRow>(definition.sql, [limit]);
+    return {
+      columns: definition.columns,
+      rows: result.rows.map(row => definition.columns.map(column => row[column] ?? null))
+    };
   }
 
   async close(): Promise<void> {

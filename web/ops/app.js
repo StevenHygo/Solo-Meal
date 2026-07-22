@@ -11,6 +11,7 @@ const reportLabels = {
 const statusLabels = { open: '待处理', in_progress: '处理中', completed: '已完成', cancelled: '已驳回' };
 const poiStatusLabels = { pending: '待去重', matched: '已匹配', new_branch: '新分店', rejected: '已驳回' };
 const restaurantStatusLabels = { draft: '草稿', review: '待审核', published: '已发布', withdrawn: '已撤回' };
+const outboxStatusLabels = { pending: '待投递', processing: '投递中', failed: '失败', processed: '已完成' };
 const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const evidenceAttributeLabels = {
   accepts_solo: '单人接待', seating: '座位情况', ordering: '点餐规则',
@@ -23,6 +24,7 @@ const state = {
   apiBase: '', token: '', operator: '', mode: 'tasks', status: 'open', tasks: [], selectedTaskId: null,
   poiStatus: 'pending', poiCandidates: [], selectedPoiId: null, poiImportCandidates: [],
   restaurantStatus: 'draft', restaurants: [], selectedRestaurantId: null, draftCandidate: null,
+  outboxStatus: 'pending', outboxEvents: [], selectedOutboxId: null, auditLogs: [],
   restaurantDirty: false, busy: false
 };
 const el = id => document.getElementById(id);
@@ -98,6 +100,10 @@ function currentPoiCandidate() {
 
 function currentRestaurant() {
   return state.restaurants.find(restaurant => restaurant.id === state.selectedRestaurantId) || null;
+}
+
+function currentOutboxEvent() {
+  return state.outboxEvents.find(event => event.id === state.selectedOutboxId) || null;
 }
 
 function renderActions(task) {
@@ -779,12 +785,152 @@ async function updateCoverageQuality(event) {
   }
 }
 
+function renderOutboxEvents() {
+  el('outboxCount').textContent = state.outboxEvents.length;
+  const list = el('outboxList');
+  if (!state.outboxEvents.length) {
+    list.innerHTML = '<div class="queue-empty">当前状态没有投递事件</div>';
+    renderOutboxDetail();
+    return;
+  }
+  list.innerHTML = state.outboxEvents.map(event => `
+    <button class="task-row ${event.id === state.selectedOutboxId ? 'active' : ''}" data-outbox-id="${escapeHtml(event.id)}" type="button">
+      <span class="candidate-source">${escapeHtml(String(event.attempts))}</span>
+      <span><strong>${escapeHtml(event.topic)}</strong><small>${escapeHtml(event.aggregate_id)}</small></span>
+      <time>${escapeHtml(formatTime(event.created_at))}</time>
+    </button>
+  `).join('');
+}
+
+function renderOutboxDetail() {
+  const event = currentOutboxEvent();
+  el('outboxDetailEmpty').classList.toggle('hidden', Boolean(event));
+  el('outboxDetailContent').classList.toggle('hidden', !event);
+  if (!event) return;
+  el('outboxDetailTitle').textContent = event.topic;
+  el('outboxStatusBadge').textContent = outboxStatusLabels[event.status] || event.status;
+  el('outboxStatusBadge').dataset.status = event.status;
+  el('outboxTopicValue').textContent = event.topic;
+  el('outboxAggregateValue').textContent = event.aggregate_id;
+  el('outboxAttemptsValue').textContent = String(event.attempts);
+  el('outboxAvailableValue').textContent = formatTime(event.available_at);
+  el('outboxErrorBlock').classList.toggle('hidden', !event.last_error);
+  el('outboxErrorValue').textContent = event.last_error || '-';
+  el('outboxPayloadValue').textContent = JSON.stringify(event.payload, null, 2);
+  el('retryOutboxButton').classList.toggle('hidden', event.status !== 'failed');
+}
+
+function auditQuery() {
+  const params = new URLSearchParams({ limit: '100' });
+  for (const [id, key] of [
+    ['auditActorInput', 'actor_id'], ['auditActionInput', 'action'],
+    ['auditEntityTypeInput', 'entity_type'], ['auditEntityIdInput', 'entity_id']
+  ]) {
+    const value = el(id).value.trim();
+    if (value) params.set(key, value);
+  }
+  return params.toString();
+}
+
+function renderAuditLogs() {
+  el('auditCount').textContent = state.auditLogs.length;
+  const list = el('auditList');
+  if (!state.auditLogs.length) {
+    list.innerHTML = '<div class="queue-empty">当前条件没有审计记录</div>';
+    return;
+  }
+  list.innerHTML = state.auditLogs.map(log => `
+    <article class="audit-row">
+      <span class="audit-action">${escapeHtml(log.action)}</span>
+      <div><strong>${escapeHtml(log.entity_type)} · ${escapeHtml(log.entity_id)}</strong><small>${escapeHtml(log.actor_id)} · ${escapeHtml(log.reason)}</small></div>
+      <time>${escapeHtml(formatTime(log.created_at))}</time>
+    </article>
+  `).join('');
+}
+
+async function loadOperations({ preserveSelection = false } = {}) {
+  if (!state.token || state.busy) return;
+  state.busy = true;
+  setConnection('idle', '正在读取');
+  try {
+    const [outboxResponse, auditResponse] = await Promise.all([
+      request(`/api/v1/admin/outbox-events?status=${encodeURIComponent(state.outboxStatus)}&limit=100`),
+      request(`/api/v1/admin/audit-logs?${auditQuery()}`)
+    ]);
+    state.outboxEvents = outboxResponse.outbox_events;
+    state.auditLogs = auditResponse.audit_logs;
+    if (!preserveSelection || !state.outboxEvents.some(event => event.id === state.selectedOutboxId)) {
+      state.selectedOutboxId = state.outboxEvents[0]?.id || null;
+    }
+    renderOutboxEvents();
+    renderOutboxDetail();
+    renderAuditLogs();
+    setConnection('ready', '已连接');
+  } catch (error) {
+    state.outboxEvents = [];
+    state.auditLogs = [];
+    state.selectedOutboxId = null;
+    renderOutboxEvents();
+    renderAuditLogs();
+    setConnection('error', '连接失败');
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function retryOutboxEvent() {
+  const event = currentOutboxEvent();
+  if (!event || event.status !== 'failed' || state.busy) return;
+  state.busy = true;
+  try {
+    await request(`/api/v1/admin/outbox-events/${encodeURIComponent(event.id)}/retry`, { method: 'POST', body: '{}' });
+    showToast('失败事件已重新入队');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+  await loadOperations();
+}
+
+async function downloadOperationsExport(event) {
+  event.preventDefault();
+  if (!state.token || state.busy) return;
+  const dataset = el('exportDatasetInput').value;
+  const limit = el('exportLimitInput').value;
+  state.busy = true;
+  try {
+    const response = await fetch(`${state.apiBase}/api/v1/admin/exports/${encodeURIComponent(dataset)}.csv?limit=${encodeURIComponent(limit)}`, {
+      headers: { authorization: `Bearer ${state.token}`, 'x-operator-id': state.operator }
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error?.message || body?.error?.code || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('content-disposition') || '';
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `solo-meal-${dataset}.csv`;
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    showToast('CSV 已生成');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+}
+
 function setMode(mode) {
-  if (mode !== 'tasks' && mode !== 'poi' && mode !== 'restaurants') return;
+  if (!['tasks', 'poi', 'restaurants', 'operations'].includes(mode)) return;
   state.mode = mode;
   el('taskWorkspace').classList.toggle('hidden', mode !== 'tasks');
   el('poiWorkspace').classList.toggle('hidden', mode !== 'poi');
   el('restaurantWorkspace').classList.toggle('hidden', mode !== 'restaurants');
+  el('operationsWorkspace').classList.toggle('hidden', mode !== 'operations');
   if (mode !== 'poi') {
     el('poiImportBand').classList.add('hidden');
     el('qualityBand').classList.add('hidden');
@@ -797,7 +943,8 @@ function setMode(mode) {
   if (!state.token) return;
   if (mode === 'tasks') loadTasks();
   else if (mode === 'poi') loadPoiCandidates();
-  else loadRestaurants({ preserveSelection: true });
+  else if (mode === 'restaurants') loadRestaurants({ preserveSelection: true });
+  else loadOperations({ preserveSelection: true });
 }
 
 function bindEvents() {
@@ -822,7 +969,8 @@ function bindEvents() {
     el('tokenInput').value = '';
     if (state.mode === 'tasks') loadTasks();
     else if (state.mode === 'poi') loadPoiCandidates();
-    else loadRestaurants({ preserveSelection: true });
+    else if (state.mode === 'restaurants') loadRestaurants({ preserveSelection: true });
+    else loadOperations({ preserveSelection: true });
   });
   el('modeNav').addEventListener('click', event => {
     const button = event.target.closest('[data-mode]');
@@ -963,6 +1111,32 @@ function bindEvents() {
     const button = event.target.closest('[data-restaurant-action]');
     if (button) transitionRestaurant(button.dataset.restaurantAction);
   });
+  el('refreshOperationsButton').addEventListener('click', () => loadOperations({ preserveSelection: true }));
+  el('outboxStatusTabs').addEventListener('click', event => {
+    const button = event.target.closest('[data-outbox-status]');
+    if (!button || button.dataset.outboxStatus === state.outboxStatus) return;
+    state.outboxStatus = button.dataset.outboxStatus;
+    document.querySelectorAll('[data-outbox-status]').forEach(item => {
+      const selected = item === button;
+      item.classList.toggle('active', selected);
+      item.setAttribute('aria-selected', String(selected));
+    });
+    state.selectedOutboxId = null;
+    loadOperations();
+  });
+  el('outboxList').addEventListener('click', event => {
+    const button = event.target.closest('[data-outbox-id]');
+    if (!button) return;
+    state.selectedOutboxId = button.dataset.outboxId;
+    renderOutboxEvents();
+    renderOutboxDetail();
+  });
+  el('retryOutboxButton').addEventListener('click', retryOutboxEvent);
+  el('auditFilterForm').addEventListener('submit', event => {
+    event.preventDefault();
+    loadOperations({ preserveSelection: true });
+  });
+  el('exportForm').addEventListener('submit', downloadOperationsExport);
 }
 
 function initialize() {

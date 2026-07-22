@@ -45,6 +45,7 @@ assert(restaurantRepository.includes("from './api-client.js'"), 'repository owns
 assert(!/(openai|anthropic|llm-gateway|xiaohongshu|douyin|wechat|wx\.)/i.test(app + data + apiClient + restaurantRepository), 'web runtime has no social, LLM, or WeChat dependency');
 assert(!/https?:\/\//.test(html + css), 'HTML and CSS do not depend on external assets');
 assert(html.includes('SOLO MEAL / V1 BETA'), 'HTML identifies the v1 Beta');
+assert(html.includes('<h1>一个人也要<br /><em>好好吃饭</em></h1>'), 'public hero preserves the original brand line');
 assert(packageJson.version === '1.0.0-beta.1', 'package version matches the v1 Beta release');
 assert(/defaultMode:\s*'static'/.test(config), 'static data remains the default during migration');
 assert(apiClient.includes("query.get('dataSource') === 'api'"), 'API mode requires an explicit runtime flag');
@@ -121,6 +122,11 @@ assert(opsApp.includes('maximumFractionDigits: 1'), 'operator quality percentage
 assert(!/data-poi-action="publish"/.test(opsHtml + opsApp), 'POI candidate workflow cannot publish restaurants directly');
 assert(opsHtml.includes('data-mode="restaurants"'), 'operator workbench has a restaurant publication mode');
 assert(opsHtml.includes('id="restaurantDraftForm"'), 'operator workbench provides a structured restaurant draft form');
+assert(opsHtml.includes('data-mode="operations"'), 'operator workbench has an audit and delivery mode');
+assert(opsApp.includes('/api/v1/admin/outbox-events?status='), 'operator workbench reads outbox delivery queues');
+assert(opsApp.includes('/api/v1/admin/audit-logs?'), 'operator workbench filters audit logs');
+assert(opsApp.includes('/retry'), 'operator workbench retries failed outbox events');
+assert(opsApp.includes('/api/v1/admin/exports/'), 'operator workbench downloads controlled CSV exports');
 assert(opsCss.includes('@media (max-width: 560px)') && opsCss.includes('.compact-grid'), 'operator draft form has a mobile layout contract');
 
 const opsIds = [...opsHtml.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);

@@ -31,6 +31,7 @@
       <button class="active" data-mode="tasks" type="button" aria-pressed="true">纠错复核</button>
       <button data-mode="poi" type="button" aria-pressed="false">POI 候选</button>
       <button data-mode="restaurants" type="button" aria-pressed="false">餐厅发布</button>
+      <button data-mode="operations" type="button" aria-pressed="false">审计投递</button>
     </nav>
 
     <main class="workspace" id="taskWorkspace">
@@ -221,6 +222,55 @@
             <div class="review-actions" id="restaurantReviewActions"></div>
           </section>
         </div>
+      </section>
+    </main>
+
+    <main class="workspace hidden" id="operationsWorkspace">
+      <aside class="queue-panel" aria-labelledby="outboxQueueTitle">
+        <div class="panel-heading"><div><p>DELIVERY QUEUE</p><h2 id="outboxQueueTitle">投递队列 <span id="outboxCount">0</span></h2></div><button class="icon-button" id="refreshOperationsButton" type="button" title="刷新审计与投递" aria-label="刷新审计与投递">↻</button></div>
+        <div class="status-tabs" id="outboxStatusTabs" role="tablist" aria-label="投递状态">
+          <button class="active" data-outbox-status="pending" role="tab" aria-selected="true" type="button">待投递</button>
+          <button data-outbox-status="processing" role="tab" aria-selected="false" type="button">投递中</button>
+          <button data-outbox-status="failed" role="tab" aria-selected="false" type="button">失败</button>
+          <button data-outbox-status="processed" role="tab" aria-selected="false" type="button">已完成</button>
+        </div>
+        <div class="task-list" id="outboxList"><div class="queue-empty">连接后读取投递事件</div></div>
+      </aside>
+
+      <section class="detail-panel operations-detail" aria-labelledby="outboxDetailTitle">
+        <div class="detail-empty" id="outboxDetailEmpty"><span aria-hidden="true">↗</span><strong>选择一条投递事件</strong></div>
+        <div class="detail-content hidden" id="outboxDetailContent">
+          <div class="detail-heading"><div><p>EVENT DELIVERY</p><h2 id="outboxDetailTitle">事件详情</h2></div><span class="priority-badge outbox-status-mark" id="outboxStatusBadge">待投递</span></div>
+          <dl class="task-facts">
+            <div><dt>主题</dt><dd id="outboxTopicValue">-</dd></div>
+            <div><dt>聚合 ID</dt><dd id="outboxAggregateValue">-</dd></div>
+            <div><dt>尝试次数</dt><dd id="outboxAttemptsValue">-</dd></div>
+            <div><dt>可投递时间</dt><dd id="outboxAvailableValue">-</dd></div>
+          </dl>
+          <section class="delivery-error hidden" id="outboxErrorBlock"><span>最近错误</span><strong id="outboxErrorValue">-</strong></section>
+          <section class="payload-block"><div><h3>事件载荷</h3><button class="danger-button compact-button hidden" id="retryOutboxButton" type="button">重新入队</button></div><pre id="outboxPayloadValue">{}</pre></section>
+        </div>
+
+        <section class="operations-control" aria-labelledby="auditTitle">
+          <div class="operations-heading"><div><p>AUDIT TRAIL</p><h2 id="auditTitle">审计日志 <span id="auditCount">0</span></h2></div></div>
+          <form class="audit-filter" id="auditFilterForm">
+            <label><span>操作人</span><input id="auditActorInput" type="text" maxlength="120"></label>
+            <label><span>动作</span><input id="auditActionInput" type="text" maxlength="120"></label>
+            <label><span>实体类型</span><input id="auditEntityTypeInput" type="text" maxlength="120"></label>
+            <label><span>实体 ID</span><input id="auditEntityIdInput" type="text" maxlength="120"></label>
+            <button class="secondary-button" type="submit">筛选</button>
+          </form>
+          <div class="audit-list" id="auditList"><div class="queue-empty">连接后读取审计日志</div></div>
+        </section>
+
+        <section class="operations-control export-control" aria-labelledby="exportTitle">
+          <div class="operations-heading"><div><p>CONTROLLED EXPORT</p><h2 id="exportTitle">批量导出</h2></div></div>
+          <form class="export-form" id="exportForm">
+            <label><span>数据集</span><select id="exportDatasetInput"><option value="restaurants">餐厅</option><option value="poi_candidates">POI 候选</option><option value="curation_tasks">复核任务</option><option value="audit_logs">审计日志</option></select></label>
+            <label><span>最多行数</span><input id="exportLimitInput" type="number" min="1" max="1000" value="1000" required></label>
+            <button class="primary-button" type="submit">下载 CSV</button>
+          </form>
+        </section>
       </section>
     </main>
     <div class="toast hidden" id="opsToast" role="status"></div>

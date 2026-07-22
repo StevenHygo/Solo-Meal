@@ -60,3 +60,15 @@ test('restaurant publishing migration adds dual-review metadata and a reversible
   assert.match(rollback, /DROP COLUMN IF EXISTS draft_restaurant_id/);
   assert.match(rollback, /DROP COLUMN IF EXISTS review_submitted_by/);
 });
+
+test('outbox delivery migration adds recoverable leases and a reversible failed queue', async () => {
+  const migration = await readFile(path.resolve('migrations', '005_outbox_delivery.up.sql'), 'utf8');
+  const rollback = await readFile(path.resolve('migrations', '005_outbox_delivery.down.sql'), 'utf8');
+  assert.match(migration, /ADD COLUMN status text NOT NULL DEFAULT 'pending'/);
+  assert.match(migration, /CHECK \(status IN \('pending', 'processing', 'failed', 'processed'\)\)/);
+  assert.match(migration, /SET status = 'processed'[\s\S]+WHERE processed_at IS NOT NULL/);
+  assert.match(migration, /outbox_processing_lease_idx/);
+  assert.match(migration, /outbox_failed_queue_idx/);
+  assert.match(rollback, /DROP COLUMN IF EXISTS locked_at/);
+  assert.match(rollback, /CREATE INDEX outbox_pending_idx/);
+});

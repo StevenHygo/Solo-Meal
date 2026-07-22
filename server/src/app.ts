@@ -21,6 +21,16 @@ import {
   restaurantDraftSchema,
   toManagedRestaurantDto
 } from './services/publishing.js';
+import {
+  auditLogQuerySchema,
+  operationsExportParamsSchema,
+  operationsExportQuerySchema,
+  outboxEventParamsSchema,
+  outboxEventQuerySchema,
+  serializeOperationsCsv,
+  toAuditLogDto,
+  toOutboxEventDto
+} from './services/operations-control.js';
 
 interface AppOptions {
   config: AppConfig;
@@ -53,6 +63,7 @@ export async function createApp({ config, repository, clock = () => new Date() }
       else callback(new Error('ORIGIN_NOT_ALLOWED'), false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH'],
+    exposedHeaders: ['Content-Disposition'],
     maxAge: 86400
   });
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
@@ -98,7 +109,9 @@ export async function createApp({ config, repository, clock = () => new Date() }
       SECOND_REVIEWER_REQUIRED: { status: 409, message: '发布必须由提交审核之外的操作人完成' },
       PUBLISHING_REQUIREMENTS_NOT_MET: { status: 422, message: '核心单人字段或有效证据不满足发布要求' },
       SOURCE_CANDIDATE_REQUIRED: { status: 409, message: '餐厅缺少可追溯的来源候选' },
-      INVALID_EVIDENCE_TIME: { status: 400, message: '证据观察时间不能晚于当前时间' }
+      INVALID_EVIDENCE_TIME: { status: 400, message: '证据观察时间不能晚于当前时间' },
+      OUTBOX_EVENT_NOT_FOUND: { status: 404, message: '投递事件不存在' },
+      OUTBOX_EVENT_NOT_FAILED: { status: 409, message: '只有失败事件可以人工重试' }
     };
     const match = known[normalizedError.message];
     if (match) {
@@ -343,6 +356,51 @@ export async function createApp({ config, repository, clock = () => new Date() }
       updatedAt: clock()
     });
     return { request_id: request.id, quality: toCoverageQualityDto(quality) };
+  });
+
+  app.get('/api/v1/admin/audit-logs', { preHandler: requireAdmin }, async request => {
+    const query = auditLogQuerySchema.parse(request.query);
+    const logs = await repository.listAuditLogs({
+      actorId: query.actor_id ?? null,
+      action: query.action ?? null,
+      entityType: query.entity_type ?? null,
+      entityId: query.entity_id ?? null,
+      limit: query.limit
+    });
+    return { request_id: request.id, audit_logs: logs.map(toAuditLogDto) };
+  });
+
+  app.get('/api/v1/admin/outbox-events', { preHandler: requireAdmin }, async request => {
+    const query = outboxEventQuerySchema.parse(request.query);
+    const events = await repository.listOutboxEvents({
+      status: query.status ?? null,
+      topic: query.topic ?? null,
+      aggregateId: query.aggregate_id ?? null,
+      limit: query.limit
+    });
+    return { request_id: request.id, outbox_events: events.map(toOutboxEventDto) };
+  });
+
+  app.post('/api/v1/admin/outbox-events/:id/retry', {
+    preHandler: requireAdmin,
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } }
+  }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { id } = outboxEventParamsSchema.parse(request.params);
+    const event = await repository.retryOutboxEvent(id, actorId, clock());
+    return { request_id: request.id, outbox_event: toOutboxEventDto(event) };
+  });
+
+  app.get('/api/v1/admin/exports/:dataset.csv', { preHandler: requireAdmin }, async (request, reply) => {
+    const { dataset } = operationsExportParamsSchema.parse(request.params);
+    const { limit } = operationsExportQuerySchema.parse(request.query);
+    const data = await repository.exportOperationsData(dataset, limit);
+    const date = clock().toISOString().slice(0, 10);
+    return reply
+      .header('cache-control', 'no-store')
+      .header('content-disposition', `attachment; filename="solo-meal-${dataset}-${date}.csv"`)
+      .type('text/csv; charset=utf-8')
+      .send(serializeOperationsCsv(data));
   });
 
   app.addHook('onClose', async () => repository.close());
