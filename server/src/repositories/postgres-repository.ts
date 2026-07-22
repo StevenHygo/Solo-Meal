@@ -22,6 +22,13 @@ import type {
   ExpiringEvidenceRecord,
   ManagedCoverageCity
 } from '../domain/coverage-operations.js';
+import type {
+  RankingConfigActivation,
+  RankingConfigDraft,
+  RankingConfigRecord,
+  RankingConfigStatus,
+  RankingWeights
+} from '../domain/ranking-config.js';
 import type { City, CoverageArea, LocationSuggestion } from '../domain/types.js';
 import { rankingConfig } from '../catalog.js';
 import { withTransaction, type DatabaseClient, type DatabasePool } from '../db/pool.js';
@@ -177,6 +184,31 @@ interface OutboxEventRow {
 interface OperationsExportRow {
   [column: string]: OperationsExportValue;
 }
+
+interface RankingConfigRow {
+  version: string;
+  status: RankingConfigStatus;
+  weights: RankingWeights;
+  checksum: string;
+  published_at: string | null;
+  created_at: string;
+}
+
+function mapRankingConfig(row: RankingConfigRow): RankingConfigRecord {
+  return {
+    version: row.version,
+    status: row.status,
+    weights: row.weights,
+    checksum: row.checksum,
+    publishedAt: row.published_at,
+    createdAt: row.created_at
+  };
+}
+
+const rankingConfigSelect = `
+  SELECT version, status, weights, checksum, published_at::text, created_at::text
+  FROM ranking_configs
+`;
 
 function mapAuditLog(row: AuditLogRow): AuditLogRecord {
   return {
@@ -1430,6 +1462,97 @@ export class PostgresRepository implements RestaurantRepository {
       expiresAt: row.expires_at,
       expiresInDays: Number(row.expires_in_days)
     }));
+  }
+
+  async getActiveRankingConfig(): Promise<RankingConfigRecord> {
+    const result = await this.pool.query<RankingConfigRow>(`${rankingConfigSelect}
+      WHERE status = 'active'
+      LIMIT 1
+    `);
+    const config = result.rows[0];
+    if (!config) throw new Error('ACTIVE_RANKING_CONFIG_MISSING');
+    return mapRankingConfig(config);
+  }
+
+  async listRankingConfigs(limit: number): Promise<RankingConfigRecord[]> {
+    const result = await this.pool.query<RankingConfigRow>(`${rankingConfigSelect}
+      ORDER BY created_at DESC, version DESC
+      LIMIT $1
+    `, [limit]);
+    return result.rows.map(mapRankingConfig);
+  }
+
+  async createRankingConfig(draft: RankingConfigDraft): Promise<RankingConfigRecord> {
+    return withTransaction(this.pool, async client => {
+      const result = await client.query<RankingConfigRow>(`
+        INSERT INTO ranking_configs (version, status, weights, checksum, created_at)
+        VALUES ($1, 'draft', $2::jsonb, $3, $4)
+        ON CONFLICT (version) DO NOTHING
+        RETURNING version, status, weights, checksum, published_at::text, created_at::text
+      `, [draft.version, JSON.stringify(draft.weights), draft.checksum, draft.createdAt]);
+      const row = result.rows[0];
+      if (!row) throw new Error('RANKING_CONFIG_EXISTS');
+      const record = mapRankingConfig(row);
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, after_value, created_at)
+        VALUES ($1, 'create', 'ranking_config', $2, $3, $4::jsonb, $5)
+      `, [draft.actorId, draft.version, draft.reason, JSON.stringify({
+        status: record.status,
+        weights: record.weights,
+        checksum: record.checksum
+      }), draft.createdAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('ranking.config_created', $1, $2::jsonb, $3, $3)
+      `, [draft.version, JSON.stringify({
+        version: draft.version,
+        weights: record.weights,
+        checksum: record.checksum
+      }), draft.createdAt]);
+      return record;
+    });
+  }
+
+  async activateRankingConfig(version: string, activation: RankingConfigActivation): Promise<RankingConfigRecord> {
+    return withTransaction(this.pool, async client => {
+      const locked = await client.query<RankingConfigRow>(`${rankingConfigSelect}
+        WHERE status = 'active' OR version = $1
+        ORDER BY version
+        FOR UPDATE
+      `, [version]);
+      const target = locked.rows.find(row => row.version === version);
+      if (!target) throw new Error('RANKING_CONFIG_NOT_FOUND');
+      if (target.status === 'active') return mapRankingConfig(target);
+      const active = locked.rows.find(row => row.status === 'active') ?? null;
+      if (active) {
+        await client.query(`
+          UPDATE ranking_configs SET status = 'retired' WHERE version = $1
+        `, [active.version]);
+      }
+      const result = await client.query<RankingConfigRow>(`
+        UPDATE ranking_configs
+        SET status = 'active', published_at = $2
+        WHERE version = $1
+        RETURNING version, status, weights, checksum, published_at::text, created_at::text
+      `, [version, activation.activatedAt]);
+      const next = mapRankingConfig(result.rows[0]!);
+      const action = target.status === 'retired' ? 'rollback' : 'publish';
+      await client.query(`
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason, before_value, after_value, created_at)
+        VALUES ($1, $2, 'ranking_config', $3, $4, $5::jsonb, $6::jsonb, $7)
+      `, [activation.actorId, action, version, activation.reason,
+        JSON.stringify({ target_status: target.status, active_version: active?.version ?? null }),
+        JSON.stringify({ target_status: 'active', active_version: version }), activation.activatedAt]);
+      await client.query(`
+        INSERT INTO outbox_events (topic, aggregate_id, payload, available_at, created_at)
+        VALUES ('ranking.config_activated', $1, $2::jsonb, $3, $3)
+      `, [version, JSON.stringify({
+        version,
+        previous_version: active?.version ?? null,
+        checksum: next.checksum
+      }), activation.activatedAt]);
+      return next;
+    });
   }
 
   async listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]> {

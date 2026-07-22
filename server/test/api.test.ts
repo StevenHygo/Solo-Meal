@@ -70,6 +70,109 @@ test('configuration, city, suggestion, search and detail contracts work together
   }
 });
 
+test('ranking configurations publish, invalidate old cursors and roll back with an audit trail', async () => {
+  const repository = new FixtureRepository();
+  const app = await createApp({ config, repository, clock: fixedNow });
+  const headers = {
+    authorization: `Bearer ${config.adminApiToken}`,
+    'x-operator-id': 'operator.ranking'
+  };
+  try {
+    const firstPage = await app.inject({
+      method: 'POST', url: '/api/v1/restaurants/search',
+      payload: searchPayload({
+        filters: { budget_max_fen: null, cuisine_codes: [], open_now: false, fast_meal: false, only_solo_verified: true },
+        page_size: 2
+      })
+    });
+    const before = firstPage.json();
+    assert.equal(before.ranking_version, 'v1-beta.1');
+    assert.equal(typeof before.next_cursor, 'string');
+
+    const invalidWeights = await app.inject({
+      method: 'POST', url: '/api/v1/admin/ranking-configs', headers,
+      payload: {
+        version: 'v1-invalid',
+        weights: { solo_fit: 0.4, distance_fit: 0.2, budget_fit: 0.1, cuisine_fit: 0.1, time_fit: 0.1 },
+        reason: '验证权重总和约束'
+      }
+    });
+    assert.equal(invalidWeights.statusCode, 400);
+    assert.equal(invalidWeights.json().error.code, 'INVALID_REQUEST');
+
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/admin/ranking-configs', headers,
+      payload: {
+        version: 'v1-distance.1',
+        weights: { solo_fit: 0, distance_fit: 1, budget_fit: 0, cuisine_fit: 0, time_fit: 0 },
+        reason: '提高距离因素用于发布链路回归'
+      }
+    });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.json().ranking_config.status, 'draft');
+
+    const duplicate = await app.inject({
+      method: 'POST', url: '/api/v1/admin/ranking-configs', headers,
+      payload: {
+        version: 'v1-distance.1',
+        weights: { solo_fit: 0, distance_fit: 1, budget_fit: 0, cuisine_fit: 0, time_fit: 0 },
+        reason: '验证重复版本冲突处理'
+      }
+    });
+    assert.equal(duplicate.statusCode, 409);
+    assert.equal(duplicate.json().error.code, 'RANKING_CONFIG_EXISTS');
+
+    const activated = await app.inject({
+      method: 'POST', url: '/api/v1/admin/ranking-configs/v1-distance.1/activate', headers,
+      payload: { reason: '发布距离优先配置用于回归验证' }
+    });
+    assert.equal(activated.statusCode, 200);
+    assert.equal(activated.json().ranking_config.status, 'active');
+
+    const configuration = await app.inject({ method: 'GET', url: '/api/v1/config' });
+    assert.equal(configuration.json().ranking_version, 'v1-distance.1');
+    const afterSearch = await app.inject({
+      method: 'POST', url: '/api/v1/restaurants/search',
+      payload: searchPayload({ filters: {
+        budget_max_fen: null, cuisine_codes: [], open_now: false, fast_meal: false, only_solo_verified: true
+      } })
+    });
+    const after = afterSearch.json();
+    assert.equal(after.ranking_version, 'v1-distance.1');
+    assert.notEqual(after.results[1].rank_score, before.results[1].rank_score);
+
+    const staleCursor = await app.inject({
+      method: 'POST', url: '/api/v1/restaurants/search',
+      payload: searchPayload({
+        filters: { budget_max_fen: null, cuisine_codes: [], open_now: false, fast_meal: false, only_solo_verified: true },
+        page_size: 2,
+        cursor: before.next_cursor
+      })
+    });
+    assert.equal(staleCursor.statusCode, 400);
+    assert.equal(staleCursor.json().error.code, 'INVALID_CURSOR');
+
+    const rolledBack = await app.inject({
+      method: 'POST', url: '/api/v1/admin/ranking-configs/v1-beta.1/activate', headers,
+      payload: { reason: '回滚基准版本并验证恢复链路' }
+    });
+    assert.equal(rolledBack.json().ranking_config.status, 'active');
+    const configs = await app.inject({ method: 'GET', url: '/api/v1/admin/ranking-configs', headers });
+    assert.deepEqual(
+      Object.fromEntries(configs.json().ranking_configs.map((item: { version: string; status: string }) => [item.version, item.status])),
+      { 'v1-distance.1': 'retired', 'v1-beta.1': 'active' }
+    );
+    const audits = await repository.listAuditLogs({
+      actorId: 'operator.ranking', action: null, entityType: 'ranking_config', entityId: null, limit: 10
+    });
+    assert.deepEqual(audits.map(item => item.action), ['rollback', 'publish', 'create']);
+    const outbox = await repository.listOutboxEvents({ status: 'pending', topic: null, aggregateId: null, limit: 10 });
+    assert.equal(outbox.filter(item => item.topic.startsWith('ranking.config_')).length, 3);
+  } finally {
+    await app.close();
+  }
+});
+
 test('CORS preflight allows browser draft updates with PUT', async () => {
   const app = await createApp({ config, repository: new FixtureRepository(), clock: fixedNow });
   try {

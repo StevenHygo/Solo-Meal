@@ -19,6 +19,11 @@ import type {
   ExpiringEvidenceRecord,
   ManagedCoverageCity
 } from './coverage-operations.js';
+import type {
+  RankingConfigActivation,
+  RankingConfigDraft,
+  RankingConfigRecord
+} from './ranking-config.js';
 
 export interface RestaurantHours extends HoursInterval {
   dayOfWeek: number | null;
@@ -107,6 +112,10 @@ export interface RestaurantRepository {
   updateCityStatus(code: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity>;
   updateCoverageAreaStatus(id: string, update: CoverageStatusUpdate): Promise<ManagedCoverageCity>;
   listExpiringEvidence(query: ExpiringEvidenceQuery): Promise<ExpiringEvidenceRecord[]>;
+  getActiveRankingConfig(): Promise<RankingConfigRecord>;
+  listRankingConfigs(limit: number): Promise<RankingConfigRecord[]>;
+  createRankingConfig(draft: RankingConfigDraft): Promise<RankingConfigRecord>;
+  activateRankingConfig(version: string, activation: RankingConfigActivation): Promise<RankingConfigRecord>;
   listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]>;
   listOutboxEvents(query: OutboxEventQuery): Promise<OutboxEventRecord[]>;
   claimOutboxEvents(claim: OutboxClaim): Promise<OutboxEventRecord[]>;

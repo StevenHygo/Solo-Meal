@@ -22,6 +22,11 @@ import type {
   ExpiringEvidenceRecord,
   ManagedCoverageCity
 } from '../domain/coverage-operations.js';
+import type {
+  RankingConfigActivation,
+  RankingConfigDraft,
+  RankingConfigRecord
+} from '../domain/ranking-config.js';
 import type { City, Coordinate, CoverageArea, LocationSuggestion, RestaurantFixture } from '../domain/types.js';
 import { v0Restaurants } from '../fixtures/v0-restaurants.js';
 import { normalizeToWgs84 } from '../geo/coordinates.js';
@@ -29,6 +34,7 @@ import { addBusinessDays, assertTaskClaim, assertTaskTransition } from '../servi
 import { assertPoiCandidateTransition } from '../services/poi.js';
 import { deriveSoloProfile, nextPublicationStatus } from '../services/publishing.js';
 import { effectiveCoverageStatus } from '../services/coverage-operations.js';
+import { rankingChecksum } from '../services/ranking-config.js';
 
 function distanceMeters(left: Coordinate, right: Coordinate): number {
   const radians = (degrees: number) => degrees * Math.PI / 180;
@@ -118,6 +124,14 @@ export class FixtureRepository implements RestaurantRepository {
   private readonly providerRefs = new Map<string, string>();
   private readonly manualCoverageQuality = new Map<string, Partial<CoverageQualityRecord['metrics']>>();
   private readonly managedCoverage = structuredClone(cities);
+  private readonly rankingConfigs = new Map<string, RankingConfigRecord>([[rankingConfig.version, {
+    version: rankingConfig.version,
+    status: 'active',
+    weights: { ...rankingConfig.weights },
+    checksum: rankingChecksum(rankingConfig.weights),
+    publishedAt: '2026-07-21T00:00:00.000Z',
+    createdAt: '2026-07-21T00:00:00.000Z'
+  }]]);
   private readonly managedRestaurants = new Map<string, ManagedRestaurantRecord>();
   private readonly auditLogs: AuditLogRecord[] = [];
   private readonly outboxEvents = new Map<string, OutboxEventRecord>();
@@ -968,6 +982,71 @@ export class FixtureRepository implements RestaurantRepository {
     }))
       .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt) || left.id.localeCompare(right.id))
       .slice(0, query.limit);
+  }
+
+  async getActiveRankingConfig(): Promise<RankingConfigRecord> {
+    const active = [...this.rankingConfigs.values()].find(config => config.status === 'active');
+    if (!active) throw new Error('ACTIVE_RANKING_CONFIG_MISSING');
+    return structuredClone(active);
+  }
+
+  async listRankingConfigs(limit: number): Promise<RankingConfigRecord[]> {
+    return [...this.rankingConfigs.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.version.localeCompare(right.version))
+      .slice(0, limit)
+      .map(config => structuredClone(config));
+  }
+
+  async createRankingConfig(draft: RankingConfigDraft): Promise<RankingConfigRecord> {
+    if (this.rankingConfigs.has(draft.version)) throw new Error('RANKING_CONFIG_EXISTS');
+    const record: RankingConfigRecord = {
+      version: draft.version,
+      status: 'draft',
+      weights: { ...draft.weights },
+      checksum: draft.checksum,
+      publishedAt: null,
+      createdAt: draft.createdAt.toISOString()
+    };
+    this.rankingConfigs.set(record.version, record);
+    this.recordOperation({
+      actorId: draft.actorId,
+      action: 'create',
+      entityType: 'ranking_config',
+      entityId: record.version,
+      reason: draft.reason,
+      afterValue: { status: record.status, weights: record.weights, checksum: record.checksum },
+      topic: 'ranking.config_created',
+      payload: { version: record.version, weights: record.weights, checksum: record.checksum },
+      at: draft.createdAt
+    });
+    return structuredClone(record);
+  }
+
+  async activateRankingConfig(version: string, activation: RankingConfigActivation): Promise<RankingConfigRecord> {
+    const target = this.rankingConfigs.get(version);
+    if (!target) throw new Error('RANKING_CONFIG_NOT_FOUND');
+    if (target.status === 'active') return structuredClone(target);
+    const active = [...this.rankingConfigs.values()].find(config => config.status === 'active') ?? null;
+    if (active) this.rankingConfigs.set(active.version, { ...active, status: 'retired' });
+    const next: RankingConfigRecord = {
+      ...target,
+      status: 'active',
+      publishedAt: activation.activatedAt.toISOString()
+    };
+    this.rankingConfigs.set(version, next);
+    this.recordOperation({
+      actorId: activation.actorId,
+      action: target.status === 'retired' ? 'rollback' : 'publish',
+      entityType: 'ranking_config',
+      entityId: version,
+      reason: activation.reason,
+      beforeValue: { target_status: target.status, active_version: active?.version ?? null },
+      afterValue: { target_status: 'active', active_version: version },
+      topic: 'ranking.config_activated',
+      payload: { version, previous_version: active?.version ?? null, checksum: next.checksum },
+      at: activation.activatedAt
+    });
+    return structuredClone(next);
   }
 
   async listAuditLogs(query: AuditLogQuery): Promise<AuditLogRecord[]> {

@@ -130,13 +130,19 @@ assert(opsHtml.includes('data-mode="operations"'), 'operator workbench has an au
 assert(opsHtml.includes('id="coverageBand"'), 'operator workbench provides city and area coverage controls');
 assert(opsHtml.includes('id="coverageReasonInput"'), 'coverage status changes require an operator reason');
 assert(opsHtml.includes('id="expiryFilterForm"'), 'operator workbench provides evidence expiry filters');
+assert(opsHtml.includes('id="rankingConfigForm"'), 'operator workbench provides a versioned ranking form');
+assert(opsHtml.includes('id="rankingWeightTotal"'), 'ranking form exposes the weight total');
 assert(opsApp.includes('/api/v1/admin/outbox-events?status='), 'operator workbench reads outbox delivery queues');
 assert(opsApp.includes('/api/v1/admin/audit-logs?'), 'operator workbench filters audit logs');
+assert(opsApp.includes("request('/api/v1/admin/ranking-configs?limit=100')"), 'operator workbench reads ranking versions');
+assert(opsApp.includes('/api/v1/admin/ranking-configs/${encodeURIComponent(version)}/activate'), 'operator workbench publishes and rolls back ranking versions');
+assert(opsApp.includes("Math.abs(total - 1) <= 0.000001"), 'ranking form validates the weight total before submission');
 assert(opsApp.includes('/retry'), 'operator workbench retries failed outbox events');
 assert(opsApp.includes('/api/v1/admin/exports/'), 'operator workbench downloads controlled CSV exports');
 assert(opsCss.includes('@media (max-width: 560px)') && opsCss.includes('.compact-grid'), 'operator draft form has a mobile layout contract');
 assert(opsCss.includes('.coverage-row { grid-template-columns: minmax(0, 1fr) 96px;'), 'coverage controls collapse for narrow mobile screens');
 assert(opsCss.includes('.audit-row, .expiry-row { grid-template-columns: 64px minmax(0, 1fr);'), 'evidence expiry rows collapse for narrow mobile screens');
+assert(opsCss.includes('.ranking-weights { grid-column: auto; grid-template-columns: 1fr 1fr;'), 'ranking controls collapse for narrow mobile screens');
 
 const opsIds = [...opsHtml.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert(new Set(opsIds).size === opsIds.length, 'operator HTML IDs are unique');

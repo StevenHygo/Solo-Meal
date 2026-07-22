@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
 import { cities, cuisineCategories, locationSuggestions, rankingConfig } from '../catalog.js';
+import { rankingChecksum } from '../services/ranking-config.js';
 import { readConfig } from '../config/env.js';
 import { v0Restaurants } from '../fixtures/v0-restaurants.js';
 import { normalizeToWgs84 } from '../geo/coordinates.js';
@@ -52,7 +52,7 @@ async function seedCatalog(client: DatabaseClient): Promise<Map<string, string>>
   }
 
   const weights = JSON.stringify(rankingConfig.weights);
-  const checksum = createHash('sha256').update(weights).digest('hex');
+  const checksum = rankingChecksum(rankingConfig.weights);
   await client.query(`
     INSERT INTO ranking_configs (version, status, weights, checksum, published_at)
     VALUES ($1, 'active', $2::jsonb, $3, now())

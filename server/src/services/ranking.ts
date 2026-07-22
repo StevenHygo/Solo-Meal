@@ -1,5 +1,5 @@
-import { rankingConfig } from '../catalog.js';
 import type { RestaurantRecord } from '../domain/repository.js';
+import type { RankingWeights } from '../domain/ranking-config.js';
 
 export interface RankingPreferences {
   radiusM: number;
@@ -31,7 +31,11 @@ function freshnessFactor(freshness: RankedRestaurant['freshness']): number {
   return { fresh: 1, aging: 0.88, stale: 0.68, unknown: 0.6 }[freshness];
 }
 
-export function rankRestaurant(restaurant: RestaurantRecord, preferences: RankingPreferences): RankedRestaurant {
+export function rankRestaurant(
+  restaurant: RestaurantRecord,
+  preferences: RankingPreferences,
+  weights: RankingWeights
+): RankedRestaurant {
   const freshness = dataFreshness(restaurant.lastVerifiedAt, preferences.now);
   const soloFit = restaurant.soloScore * freshnessFactor(freshness);
   const distance = restaurant.distanceM ?? preferences.radiusM;
@@ -39,7 +43,6 @@ export function rankRestaurant(restaurant: RestaurantRecord, preferences: Rankin
   const budgetFit = preferences.budgetMaxFen === null ? 50 : 100;
   const cuisineFit = preferences.cuisineCodes.length ? 100 : 50;
   const timeFit = preferences.fastMeal ? 100 : 50;
-  const weights = rankingConfig.weights;
   const rankScore = weights.soloFit * soloFit
     + weights.distanceFit * distanceFit
     + weights.budgetFit * budgetFit

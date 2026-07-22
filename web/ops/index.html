@@ -262,6 +262,25 @@
           <section class="payload-block"><div><h3>事件载荷</h3><button class="danger-button compact-button hidden" id="retryOutboxButton" type="button">重新入队</button></div><pre id="outboxPayloadValue">{}</pre></section>
         </div>
 
+        <section class="operations-control ranking-control" aria-labelledby="rankingTitle">
+          <div class="operations-heading ranking-heading"><div><p>RANKING CONTROL</p><h2 id="rankingTitle">排序配置 <span id="rankingConfigCount">0</span></h2></div><span class="ranking-active" id="activeRankingVersion">未读取</span></div>
+          <form class="ranking-form" id="rankingConfigForm">
+            <label class="ranking-version"><span>新版本号</span><input id="rankingVersionInput" type="text" minlength="3" maxlength="80" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" placeholder="v1-beta.2" required></label>
+            <fieldset class="ranking-weights">
+              <legend>排序权重</legend>
+              <label><span>单人适配</span><input id="rankingSoloInput" type="number" min="0" max="1" step="0.01" value="0.35" required></label>
+              <label><span>距离</span><input id="rankingDistanceInput" type="number" min="0" max="1" step="0.01" value="0.25" required></label>
+              <label><span>预算</span><input id="rankingBudgetInput" type="number" min="0" max="1" step="0.01" value="0.15" required></label>
+              <label><span>品类</span><input id="rankingCuisineInput" type="number" min="0" max="1" step="0.01" value="0.15" required></label>
+              <label><span>用餐速度</span><input id="rankingTimeInput" type="number" min="0" max="1" step="0.01" value="0.10" required></label>
+              <output id="rankingWeightTotal" for="rankingSoloInput rankingDistanceInput rankingBudgetInput rankingCuisineInput rankingTimeInput">合计 1.00</output>
+            </fieldset>
+            <label class="ranking-reason"><span>操作说明</span><textarea id="rankingReasonInput" minlength="5" maxlength="500" rows="2" placeholder="说明配置调整、发布或回滚依据" required></textarea></label>
+            <button class="primary-button ranking-create" type="submit">创建草稿</button>
+          </form>
+          <div class="ranking-list" id="rankingConfigList"><div class="queue-empty">连接后读取排序配置</div></div>
+        </section>
+
         <section class="operations-control" aria-labelledby="auditTitle">
           <div class="operations-heading"><div><p>AUDIT TRAIL</p><h2 id="auditTitle">审计日志 <span id="auditCount">0</span></h2></div></div>
           <form class="audit-filter" id="auditFilterForm">

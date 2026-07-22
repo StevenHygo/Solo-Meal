@@ -3,7 +3,7 @@ import rateLimit from '@fastify/rate-limit';
 import { timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { ZodError, z } from 'zod';
-import { cuisineCategories, rankingConfig } from './catalog.js';
+import { cuisineCategories } from './catalog.js';
 import type { AppConfig } from './config/env.js';
 import type { RestaurantRepository } from './domain/repository.js';
 import { toRestaurantDetailDto } from './services/presentation.js';
@@ -26,6 +26,14 @@ import {
   toExpiringEvidenceDto,
   toManagedCoverageDto
 } from './services/coverage-operations.js';
+import {
+  prepareRankingConfigDraft,
+  rankingConfigActivationSchema,
+  rankingConfigDraftSchema,
+  rankingConfigParamsSchema,
+  rankingConfigQuerySchema,
+  toRankingConfigDto
+} from './services/ranking-config.js';
 import {
   managedRestaurantParamsSchema,
   managedRestaurantQuerySchema,
@@ -123,6 +131,9 @@ export async function createApp({ config, repository, clock = () => new Date() }
       PUBLISHING_REQUIREMENTS_NOT_MET: { status: 422, message: '核心单人字段或有效证据不满足发布要求' },
       CITY_NOT_FOUND: { status: 404, message: '城市不存在' },
       COVERAGE_GATE_NOT_MET: { status: 422, message: '覆盖区域尚未达到目标状态的质量门槛' },
+      ACTIVE_RANKING_CONFIG_MISSING: { status: 503, message: '当前没有可用的活动排序配置' },
+      RANKING_CONFIG_NOT_FOUND: { status: 404, message: '排序配置不存在' },
+      RANKING_CONFIG_EXISTS: { status: 409, message: '排序配置版本已经存在' },
       SOURCE_CANDIDATE_REQUIRED: { status: 409, message: '餐厅缺少可追溯的来源候选' },
       INVALID_EVIDENCE_TIME: { status: 400, message: '证据观察时间不能晚于当前时间' },
       OUTBOX_EVENT_NOT_FOUND: { status: 404, message: '投递事件不存在' },
@@ -142,19 +153,22 @@ export async function createApp({ config, repository, clock = () => new Date() }
     return reply.status(health.ok ? 200 : 503).send({ status: health.ok ? 'ok' : 'degraded', ...health });
   });
 
-  app.get('/api/v1/config', async request => ({
-    request_id: request.id,
-    version: '1.0.0-beta.1',
-    cuisines: cuisineCategories.map(category => ({ code: category.code, label: category.label, icon_key: category.iconKey })),
-    budgets: [3000, 6000, 10000],
-    ranking_version: rankingConfig.version,
-    features: {
-      natural_language_search: false,
-      account_favorites: false,
-      feedback_api: config.feedbackApiEnabled,
-      operations_api: Boolean(config.adminApiToken)
-    }
-  }));
+  app.get('/api/v1/config', async request => {
+    const activeRanking = await repository.getActiveRankingConfig();
+    return {
+      request_id: request.id,
+      version: '1.0.0-beta.1',
+      cuisines: cuisineCategories.map(category => ({ code: category.code, label: category.label, icon_key: category.iconKey })),
+      budgets: [3000, 6000, 10000],
+      ranking_version: activeRanking.version,
+      features: {
+        natural_language_search: false,
+        account_favorites: false,
+        feedback_api: config.feedbackApiEnabled,
+        operations_api: Boolean(config.adminApiToken)
+      }
+    };
+  });
 
   app.get('/api/v1/cities', async request => ({ request_id: request.id, cities: await repository.listCities() }));
 
@@ -173,8 +187,13 @@ export async function createApp({ config, repository, clock = () => new Date() }
     const restaurant = await repository.findRestaurant(id);
     if (!restaurant) return reply.status(404).send({ error: { code: 'RESTAURANT_NOT_FOUND', message: '餐厅不存在或已撤回' }, request_id: request.id });
     const now = clock();
-    const ranked = rankRestaurant(restaurant, { radiusM: 2000, budgetMaxFen: null, cuisineCodes: [], fastMeal: false, now });
-    return { request_id: request.id, restaurant: toRestaurantDetailDto(ranked, now), ranking_version: restaurant.scoringVersion };
+    const activeRanking = await repository.getActiveRankingConfig();
+    const ranked = rankRestaurant(
+      restaurant,
+      { radiusM: 2000, budgetMaxFen: null, cuisineCodes: [], fastMeal: false, now },
+      activeRanking.weights
+    );
+    return { request_id: request.id, restaurant: toRestaurantDetailDto(ranked, now), ranking_version: activeRanking.version };
   });
 
   app.post('/api/v1/feedback-reports', {
@@ -426,6 +445,31 @@ export async function createApp({ config, repository, clock = () => new Date() }
       updatedAt: clock()
     });
     return { request_id: request.id, city: toManagedCoverageDto([city])[0] };
+  });
+
+  app.get('/api/v1/admin/ranking-configs', { preHandler: requireAdmin }, async request => {
+    const query = rankingConfigQuerySchema.parse(request.query);
+    const configs = await repository.listRankingConfigs(query.limit);
+    return { request_id: request.id, ranking_configs: configs.map(toRankingConfigDto) };
+  });
+
+  app.post('/api/v1/admin/ranking-configs', { preHandler: requireAdmin }, async (request, reply) => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const input = rankingConfigDraftSchema.parse(request.body);
+    const configRecord = await repository.createRankingConfig(prepareRankingConfigDraft(input, actorId, clock()));
+    return reply.status(201).send({ request_id: request.id, ranking_config: toRankingConfigDto(configRecord) });
+  });
+
+  app.post('/api/v1/admin/ranking-configs/:version/activate', { preHandler: requireAdmin }, async request => {
+    const actorId = operatorIdSchema.parse(request.headers['x-operator-id']);
+    const { version } = rankingConfigParamsSchema.parse(request.params);
+    const input = rankingConfigActivationSchema.parse(request.body);
+    const configRecord = await repository.activateRankingConfig(version, {
+      reason: input.reason,
+      actorId,
+      activatedAt: clock()
+    });
+    return { request_id: request.id, ranking_config: toRankingConfigDto(configRecord) };
   });
 
   app.get('/api/v1/admin/audit-logs', { preHandler: requireAdmin }, async request => {

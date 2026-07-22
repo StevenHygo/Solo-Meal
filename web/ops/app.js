@@ -13,6 +13,7 @@ const poiStatusLabels = { pending: '待去重', matched: '已匹配', new_branch
 const restaurantStatusLabels = { draft: '草稿', review: '待审核', published: '已发布', withdrawn: '已撤回' };
 const outboxStatusLabels = { pending: '待投递', processing: '投递中', failed: '失败', processed: '已完成' };
 const coverageStatusLabels = { live: '正式开放', beta: 'Beta', upcoming: '即将开放', paused: '暂停', unsupported: '未覆盖' };
+const rankingStatusLabels = { draft: '草稿', active: '活动', retired: '已退休' };
 const coverageStatuses = ['live', 'beta', 'upcoming', 'paused', 'unsupported'];
 const weekdayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const evidenceAttributeLabels = {
@@ -28,8 +29,8 @@ const state = {
   poiStatus: 'pending', poiCandidates: [], selectedPoiId: null, poiImportCandidates: [],
   restaurantStatus: 'draft', restaurants: [], selectedRestaurantId: null, draftCandidate: null,
   outboxStatus: 'pending', outboxEvents: [], selectedOutboxId: null, auditLogs: [], expiringEvidence: [],
-  coverageCities: [],
-  restaurantDirty: false, busy: false
+  coverageCities: [], rankingConfigs: [],
+  rankingFormDirty: false, restaurantDirty: false, busy: false
 };
 const el = id => document.getElementById(id);
 
@@ -942,6 +943,113 @@ function renderExpiringEvidence() {
   `).join('');
 }
 
+const rankingWeightInputs = [
+  ['solo_fit', 'rankingSoloInput'],
+  ['distance_fit', 'rankingDistanceInput'],
+  ['budget_fit', 'rankingBudgetInput'],
+  ['cuisine_fit', 'rankingCuisineInput'],
+  ['time_fit', 'rankingTimeInput']
+];
+
+function rankingWeightsFromForm() {
+  return Object.fromEntries(rankingWeightInputs.map(([key, id]) => [key, Number(el(id).value)]));
+}
+
+function updateRankingWeightTotal() {
+  const total = Object.values(rankingWeightsFromForm()).reduce((sum, value) => sum + value, 0);
+  const valid = Number.isFinite(total) && Math.abs(total - 1) <= 0.000001;
+  el('rankingWeightTotal').textContent = `合计 ${Number.isFinite(total) ? total.toFixed(2) : '-'}`;
+  el('rankingWeightTotal').dataset.valid = String(valid);
+  return valid;
+}
+
+function renderRankingConfigs() {
+  el('rankingConfigCount').textContent = state.rankingConfigs.length;
+  const active = state.rankingConfigs.find(config => config.status === 'active');
+  el('activeRankingVersion').textContent = active ? `活动版本 ${active.version}` : '没有活动版本';
+  if (active && !state.rankingFormDirty) {
+    for (const [key, id] of rankingWeightInputs) el(id).value = String(active.weights[key]);
+    updateRankingWeightTotal();
+  }
+  const list = el('rankingConfigList');
+  if (!state.rankingConfigs.length) {
+    list.innerHTML = '<div class="queue-empty">当前没有排序配置</div>';
+    return;
+  }
+  list.innerHTML = state.rankingConfigs.map(config => {
+    const weights = config.weights;
+    const action = config.status === 'draft' ? 'publish' : config.status === 'retired' ? 'rollback' : null;
+    return `
+      <article class="ranking-row">
+        <div><strong>${escapeHtml(config.version)}</strong><small>${escapeHtml(config.checksum.slice(0, 12))}</small></div>
+        <span class="ranking-status" data-status="${escapeHtml(config.status)}">${escapeHtml(rankingStatusLabels[config.status] || config.status)}</span>
+        <div><strong>单人 ${weights.solo_fit} · 距离 ${weights.distance_fit} · 预算 ${weights.budget_fit}</strong><small>品类 ${weights.cuisine_fit} · 速度 ${weights.time_fit}</small></div>
+        <time>${escapeHtml(formatTime(config.published_at || config.created_at))}</time>
+        ${action ? `<button class="${action === 'rollback' ? 'danger-button' : 'secondary-button'} compact-button" data-ranking-action="${action}" data-ranking-version="${escapeHtml(config.version)}" type="button">${action === 'rollback' ? '回滚' : '发布'}</button>` : ''}
+      </article>
+    `;
+  }).join('');
+}
+
+async function createRankingConfig(event) {
+  event.preventDefault();
+  if (!state.token || state.busy) return;
+  const weights = rankingWeightsFromForm();
+  if (!updateRankingWeightTotal()) {
+    showToast('五项权重合计必须等于 1');
+    return;
+  }
+  state.busy = true;
+  try {
+    await request('/api/v1/admin/ranking-configs', {
+      method: 'POST',
+      body: JSON.stringify({
+        version: el('rankingVersionInput').value.trim(),
+        weights,
+        reason: el('rankingReasonInput').value.trim()
+      })
+    });
+    el('rankingVersionInput').value = '';
+    el('rankingReasonInput').value = '';
+    state.rankingFormDirty = false;
+    showToast('排序配置草稿已创建');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+  await loadOperations({ preserveSelection: true });
+}
+
+async function activateRankingConfig(button) {
+  if (!state.token || state.busy) return;
+  const version = button.dataset.rankingVersion;
+  const action = button.dataset.rankingAction;
+  const reason = el('rankingReasonInput').value.trim();
+  if (!version || !['publish', 'rollback'].includes(action)) return;
+  if (reason.length < 5) {
+    showToast('请填写至少 5 个字的操作说明');
+    el('rankingReasonInput').focus();
+    return;
+  }
+  const label = action === 'rollback' ? '回滚到' : '发布';
+  if (!window.confirm(`确认${label}排序配置“${version}”？`)) return;
+  state.busy = true;
+  try {
+    await request(`/api/v1/admin/ranking-configs/${encodeURIComponent(version)}/activate`, {
+      method: 'POST', body: JSON.stringify({ reason })
+    });
+    el('rankingReasonInput').value = '';
+    state.rankingFormDirty = false;
+    showToast(action === 'rollback' ? '排序配置已回滚' : '排序配置已发布');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.busy = false;
+  }
+  await loadOperations({ preserveSelection: true });
+}
+
 function renderAuditLogs() {
   el('auditCount').textContent = state.auditLogs.length;
   const list = el('auditList');
@@ -963,14 +1071,16 @@ async function loadOperations({ preserveSelection = false } = {}) {
   state.busy = true;
   setConnection('idle', '正在读取');
   try {
-    const [outboxResponse, auditResponse, expiryResponse] = await Promise.all([
+    const [outboxResponse, auditResponse, expiryResponse, rankingResponse] = await Promise.all([
       request(`/api/v1/admin/outbox-events?status=${encodeURIComponent(state.outboxStatus)}&limit=100`),
       request(`/api/v1/admin/audit-logs?${auditQuery()}`),
-      request(`/api/v1/admin/evidence/expiring?${expiryQuery()}`)
+      request(`/api/v1/admin/evidence/expiring?${expiryQuery()}`),
+      request('/api/v1/admin/ranking-configs?limit=100')
     ]);
     state.outboxEvents = outboxResponse.outbox_events;
     state.auditLogs = auditResponse.audit_logs;
     state.expiringEvidence = expiryResponse.evidence;
+    state.rankingConfigs = rankingResponse.ranking_configs;
     if (!preserveSelection || !state.outboxEvents.some(event => event.id === state.selectedOutboxId)) {
       state.selectedOutboxId = state.outboxEvents[0]?.id || null;
     }
@@ -978,15 +1088,18 @@ async function loadOperations({ preserveSelection = false } = {}) {
     renderOutboxDetail();
     renderAuditLogs();
     renderExpiringEvidence();
+    renderRankingConfigs();
     setConnection('ready', '已连接');
   } catch (error) {
     state.outboxEvents = [];
     state.auditLogs = [];
     state.expiringEvidence = [];
+    state.rankingConfigs = [];
     state.selectedOutboxId = null;
     renderOutboxEvents();
     renderAuditLogs();
     renderExpiringEvidence();
+    renderRankingConfigs();
     setConnection('error', '连接失败');
     showToast(error.message);
   } finally {
@@ -1261,6 +1374,15 @@ function bindEvents() {
     renderOutboxDetail();
   });
   el('retryOutboxButton').addEventListener('click', retryOutboxEvent);
+  el('rankingConfigForm').addEventListener('submit', createRankingConfig);
+  el('rankingConfigForm').addEventListener('input', () => {
+    state.rankingFormDirty = true;
+    updateRankingWeightTotal();
+  });
+  el('rankingConfigList').addEventListener('click', event => {
+    const button = event.target.closest('[data-ranking-action]');
+    if (button) activateRankingConfig(button);
+  });
   el('auditFilterForm').addEventListener('submit', event => {
     event.preventDefault();
     loadOperations({ preserveSelection: true });
@@ -1276,6 +1398,7 @@ function initialize() {
   const localApi = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? 'http://127.0.0.1:8787' : '';
   el('apiBaseInput').value = localApi;
   bindEvents();
+  updateRankingWeightTotal();
 }
 
 initialize();
